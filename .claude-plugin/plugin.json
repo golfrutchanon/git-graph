@@ -1,0 +1,6 @@
+{
+  "name": "git-graph",
+  "version": "0.4.1",
+  "description": "A read-only Git graph pane: pick branches, see which one leads which",
+  "types": "./types/index.d.ts"
+}
