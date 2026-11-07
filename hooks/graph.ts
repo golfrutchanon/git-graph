@@ -309,7 +309,7 @@ export function layoutGraph(commits: readonly Commit[]): { rows: Row[]; lanes: n
 // at this very commit. A tag or a detached HEAD is neither.
 export type Chip = {
   text: string
-  kind: 'head' | 'base' | 'local' | 'remote' | 'tag'
+  kind: 'head' | 'local' | 'remote' | 'tag'
   where: 'local' | 'remote' | 'both' | 'none'
 }
 
@@ -345,7 +345,7 @@ export function chipsOf(refs: readonly string[], remoteNames: ReadonlySet<string
 
       chips.push({
         text: name,
-        kind: name === head ? 'head' : name === 'main' || name === 'master' ? 'base' : 'local',
+        kind: name === head ? 'head' : 'local',
         where: synced ? 'both' : 'local',
       })
     } else {
@@ -359,7 +359,7 @@ export function chipsOf(refs: readonly string[], remoteNames: ReadonlySet<string
   return chips.sort((x, y) => rank(x) - rank(y))
 }
 
-const rank = (chip: Chip) => ['head', 'base', 'local', 'remote', 'tag'].indexOf(chip.kind)
+const rank = (chip: Chip) => ['head', 'local', 'remote', 'tag'].indexOf(chip.kind)
 
 export function ageOf(time: number, now: number): string {
   const minutes = Math.max(0, Math.floor((now - time) / 60))
@@ -394,14 +394,17 @@ function cut(text: string, room: number): string {
   return chars.length <= room ? text : `${chars.slice(0, Math.max(1, room - 1)).join('')}…`
 }
 
-const PALETTE = ['#6BA3E8', '#E88F8A', '#6CC287', '#D9B44A', '#BFA0F0', '#E8A6CA', '#6CBCC6', '#E5A273']
+// The first lane is the purple VS Code draws history in; blue is kept for what has
+// not been pushed yet.
+const OUTGOING = '#3F73D9'
+const PALETTE = ['#6B3FA0', '#E88F8A', '#6CC287', '#D9B44A', '#6CBCC6', '#E5A273', '#B8A07A']
 const paint = (color: number) => PALETTE[color % PALETTE.length]
 
 const ROW = 38
 const LANE = 20
 const FONT = 17
 const CHIP_FONT = 15
-const CHIP_CHAR = CHIP_FONT * 0.62
+const CHIP_CHAR = CHIP_FONT * 0.56
 const CHIP_HEIGHT = 26
 const CHIP_LINE = 32
 const CHIP_GAP = 5
@@ -425,29 +428,25 @@ export const SVG_LIMIT = 131072
 export const PAGE = 100
 const DRAW_LIMIT = 88000
 
-// The colors VS Code's graph gives a ref: the current branch blue, the base branch
-// orange, a remote purple. Each softened, with dark words so a label reads at a glance.
+// As in VS Code's graph: the current branch is a blue pill and every other ref a
+// purple one, with white words so a label reads at a glance on any theme.
 const STYLE = `
 .bg{fill:#fff}.t{fill:#1f2328}.d{fill:#656d76}.h{fill:transparent}
 .r:hover .h{fill:rgba(107,163,232,.14)}
-.c-head{fill:#CFE3FB;stroke:#6BA3E8}.ct-head{fill:#12345C}.i-head{stroke:#12345C}
-.c-base{fill:#FCE3CC;stroke:#E5A273}.ct-base{fill:#6B3A0C}.i-base{stroke:#6B3A0C}
-.c-local{fill:#D9F2E0;stroke:#6CC287}.ct-local{fill:#14532D}.i-local{stroke:#14532D}
-.c-remote{fill:#E9DFFB;stroke:#BFA0F0}.ct-remote{fill:#3F2A73}.i-remote{stroke:#3F2A73}
-.c-tag{fill:#FDF8DC;stroke:#D9B44A}.ct-tag{fill:#6f4e00}.i-tag{stroke:#6f4e00}
+.b{font-weight:600}
+.c-head{fill:${OUTGOING}}.ct-head{fill:#fff}.i-head{stroke:#fff}
+.c-local,.c-remote,.c-cloud{fill:#6B3FA0}.ct-local,.ct-remote{fill:#fff}.i-local,.i-remote,.i-cloud{stroke:#fff}
+.c-tag{fill:#FDF8DC;stroke:#D9B44A}.ct-tag{fill:#6f4e00}
 .dot{stroke:#fff}
+.ring{fill:#fff;stroke:${OUTGOING};stroke-width:3}
 .ic{fill:none;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
 .s{transition:transform .25s ease-out}
 .r:hover .s{transform:translateX(var(--x,0));transition:transform var(--d,1s) linear .35s}
 text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans Thai",sans-serif;font-size:${FONT}px}
-.m{font-family:ui-monospace,Menlo,monospace;font-size:${CHIP_FONT}px}
+.m{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans Thai",sans-serif;font-size:${CHIP_FONT}px;font-weight:500}
 @media (prefers-color-scheme:dark){
-.bg{fill:#1c1c1e}.t{fill:#f2f2f2}.d{fill:#a1a1aa}.dot{stroke:#1c1c1e}
-.c-head{fill:#2A4A70;stroke:#6BA3E8}.ct-head{fill:#E1EEFC}.i-head{stroke:#E1EEFC}
-.c-base{fill:#4A2F18;stroke:#E5A273}.ct-base{fill:#FBE3CC}.i-base{stroke:#FBE3CC}
-.c-local{fill:#1C3A28;stroke:#6CC287}.ct-local{fill:#D9F2E0}.i-local{stroke:#D9F2E0}
-.c-remote{fill:#352A52;stroke:#BFA0F0}.ct-remote{fill:#E9DFFB}.i-remote{stroke:#E9DFFB}
-.c-tag{fill:#3d2f00;stroke:#D9B44A}.ct-tag{fill:#f2d35e}.i-tag{stroke:#f2d35e}
+.bg{fill:#1c1c1e}.t{fill:#f2f2f2}.d{fill:#a1a1aa}.dot{stroke:#1c1c1e}.ring{fill:#1c1c1e}
+.c-tag{fill:#3d2f00;stroke:#D9B44A}.ct-tag{fill:#f2d35e}
 }
 `
 
@@ -455,37 +454,86 @@ text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans Thai",sa
 const BRANCH_ICON =
   '<circle cx="4" cy="3" r="1.8"/><circle cx="4" cy="13" r="1.8"/><circle cx="12" cy="4" r="1.8"/><path d="M4 4.8v6.4M12 5.8c0 3-8 2.4-8 5.4"/>'
 const CLOUD_ICON = '<path d="M4.6 13a3.4 3.4 0 0 1-.4-6.8A4.4 4.4 0 0 1 12.6 7a3 3 0 0 1-.1 6z"/>'
+const CURRENT_ICON = '<circle cx="8" cy="8" r="6.6"/><circle cx="8" cy="8" r="3.4"/><circle cx="8" cy="8" r=".6"/>'
 
 function chipWidthOf(chip: Chip, room: number): { label: string; width: number } {
   const label = cut(chip.text, room)
-  const icons = chip.where === 'both' ? 2 : chip.where === 'none' ? 0 : 1
+  const pill = Array.from(label).length * CHIP_CHAR + CHIP_PAD * 2 + (chip.where === 'none' ? 0 : ICON_ROOM)
 
-  return { label, width: Array.from(label).length * CHIP_CHAR + CHIP_PAD * 2 + icons * ICON_ROOM }
+  return { label, width: pill + (chip.where === 'both' ? CHIP_GAP + CHIP_HEIGHT : 0) }
 }
 
 function drawChip(chip: Chip, label: string, chipWidth: number, x: number, y: number): string {
-  const iconAt = (at: number, shape: string) =>
-    `<g class="ic i-${chip.kind}" transform="translate(${at} ${y - ICON / 2})">${shape}</g>`
-  const leading = chip.where === 'local' || chip.where === 'both'
+  const iconAt = (kind: string, at: number, shape: string) =>
+    `<g class="ic i-${kind}" transform="translate(${at} ${y - ICON / 2})">${shape}</g>`
+  const isBoth = chip.where === 'both'
+  const pill = isBoth ? chipWidth - CHIP_GAP - CHIP_HEIGHT : chipWidth
+  const lead =
+    chip.where === 'none'
+      ? ''
+      : iconAt(chip.kind, x + CHIP_PAD, chip.where === 'remote' ? CLOUD_ICON : chip.kind === 'head' ? CURRENT_ICON : BRANCH_ICON)
   const labelX = x + CHIP_PAD + (chip.where === 'none' ? 0 : ICON_ROOM)
+  // The remote's copy on this same commit: its own small purple mark, as VS Code draws it.
+  const cloud = isBoth
+    ? `<circle class="c-cloud" cx="${x + pill + CHIP_GAP + CHIP_HEIGHT / 2}" cy="${y}" r="${CHIP_HEIGHT / 2}"/>` +
+      iconAt('cloud', x + pill + CHIP_GAP + (CHIP_HEIGHT - ICON) / 2, CLOUD_ICON)
+    : ''
 
   return (
-    `<rect class="c-${chip.kind}" x="${x}" y="${y - CHIP_HEIGHT / 2}" width="${chipWidth}" height="${CHIP_HEIGHT}" rx="6"/>` +
-    (leading ? iconAt(x + CHIP_PAD, BRANCH_ICON) : '') +
-    (chip.where === 'remote' ? iconAt(x + CHIP_PAD, CLOUD_ICON) : '') +
+    `<rect class="c-${chip.kind}" x="${x}" y="${y - CHIP_HEIGHT / 2}" width="${pill}" height="${CHIP_HEIGHT}" rx="${CHIP_HEIGHT / 2}"/>` +
+    lead +
     `<text class="m ct-${chip.kind}" x="${labelX}" y="${y + 5}">${escapeXml(label)}</text>` +
-    (chip.where === 'both' ? iconAt(x + chipWidth - CHIP_PAD - ICON, CLOUD_ICON) : '')
+    cloud
   )
+}
+
+// Commits the checked-out branch has and its remote copy does not: what waits to be
+// pushed. Empty when the branch has no remote copy among the commits loaded.
+export function outgoingOf(commits: readonly Commit[], remoteNames: ReadonlySet<string>): ReadonlySet<string> {
+  const headCommit = commits.find(one => one.refs.some(ref => ref.startsWith('HEAD -> ')))
+  const name = headCommit?.refs.find(ref => ref.startsWith('HEAD -> '))?.slice('HEAD -> '.length)
+  const upstream = commits.find(one => one.refs.some(ref => remoteNames.has(ref) && ref.endsWith(`/${name}`)))
+
+  if (headCommit === undefined || upstream === undefined) return new Set()
+  const parents = new Map(commits.map(one => [one.hash, one.parents]))
+  const reach = (start: string) => {
+    const seen = new Set<string>()
+    const stack = [start]
+
+    while (stack.length > 0) {
+      const hash = stack.pop() as string
+
+      if (!seen.has(hash) && parents.has(hash)) {
+        seen.add(hash)
+        stack.push(...(parents.get(hash) ?? []))
+      }
+    }
+
+    return seen
+  }
+  const pushed = reach(upstream.hash)
+
+  return new Set([...reach(headCommit.hash)].filter(hash => !pushed.has(hash)))
+}
+
+// `0↓ 3↑`, as VS Code's status bar has it; nothing for a branch with no remote copy.
+export function syncOf(branch: Branch | undefined): string {
+  if (branch === undefined || branch.upstream === '' || branch.track === 'gone') return ''
+  const ahead = /ahead (\d+)/.exec(branch.track)?.[1] ?? '0'
+  const behind = /behind (\d+)/.exec(branch.track)?.[1] ?? '0'
+
+  return `${behind}↓ ${ahead}↑`
 }
 
 function drawRows(
   rows: readonly Row[],
-  { width, now, remoteNames, textX, above }: {
+  { width, now, remoteNames, textX, above, outgoing }: {
     width: number
     now: number
     remoteNames: ReadonlySet<string>
     textX: number
     above: Row | undefined
+    outgoing: ReadonlySet<string>
   },
 ): string {
   const edgeRight = width - 6
@@ -537,7 +585,7 @@ function drawRows(
           ? `M${x1} ${y}V${y2}`
           : `M${x1} ${y}C${x1} ${y + (y2 - y) * 0.55} ${x2} ${y2 - (y2 - y) * 0.55} ${x2} ${y2}`
 
-      lines.push(`<path d="${d}" stroke="${paint(edge.color)}"/>`)
+      lines.push(`<path d="${d}" stroke="${outgoing.has(row.commit.hash) ? OUTGOING : paint(edge.color)}"/>`)
     }
   }
 
@@ -554,8 +602,11 @@ function drawRows(
     const isHead = row.commit.refs.some(ref => ref === 'HEAD' || ref.startsWith('HEAD -> '))
     const isMerge = row.commit.parents.length > 1
 
+    // Where the checked-out branch stands now is a hollow ring, as in VS Code.
     dots.push(
-      `<circle class="dot" cx="${laneX(row.lane)}" cy="${y}" r="${isHead ? 7.5 : isMerge ? 4.5 : 6}" fill="${paint(row.color)}" stroke-width="2"/>`,
+      isHead
+        ? `<circle class="ring" cx="${laneX(row.lane)}" cy="${y}" r="7"/>`
+        : `<circle class="dot" cx="${laneX(row.lane)}" cy="${y}" r="${isMerge ? 4.5 : 6}" fill="${outgoing.has(row.commit.hash) ? OUTGOING : paint(row.color)}" stroke-width="2"/>`,
     )
 
     const extra = plan.all.length - plan.chips.length
@@ -604,7 +655,7 @@ function drawRows(
     texts.push(
       `<g class="r"><title>${tooltip}</title>` +
         `<rect class="h" x="${textX - 4}" y="${y - ROW / 2}" width="${width - textX + 4}" height="${plan.height}"/>` +
-        `<g clip-path="url(#k)"><text class="t s" x="${textX}" y="${y + 6}"${motion}>${escapeXml(subject)}<tspan class="d">${escapeXml(after)}</tspan></text></g>` +
+        `<g clip-path="url(#k)"><text class="t s${isHead ? ' b' : ''}" x="${textX}" y="${y + 6}"${motion}>${escapeXml(subject)}<tspan class="d">${escapeXml(after)}</tspan></text></g>` +
         backing +
         chipMarks +
         '</g>',
@@ -649,6 +700,7 @@ export function buildSvg(
   )
   const textX = Math.min(lanes, MAX_LANES) * LANE + 16
   const { width, now, remoteNames } = options
+  const outgoing = outgoingOf(commits, remoteNames)
   let drawn = page.length
 
   while (drawn > 0) {
@@ -658,6 +710,7 @@ export function buildSvg(
       remoteNames,
       above,
       textX,
+      outgoing,
     })
 
     if (source.length <= DRAW_LIMIT) {

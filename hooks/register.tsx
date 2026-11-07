@@ -21,6 +21,7 @@ import {
   pickPending,
   splitPath,
   stampOf,
+  syncOf,
   trackTone,
 } from './graph'
 
@@ -553,9 +554,14 @@ export const register: Register = on => {
             <Text size="footnote" dimColor>
               {data.root.split('/').pop()}
             </Text>
-            <Text size="title" weight="bold">
-              {data.head === '' ? 'detached HEAD' : data.head}
-            </Text>
+            <Box flexDirection="row" alignItems="center" gap="sm">
+              <Text size="title" weight="bold">
+                {data.head === '' ? 'detached HEAD' : data.head}
+              </Text>
+              {syncOf(branches.find(one => one.name === data.head)) !== '' && (
+                <Text weight="semibold">{syncOf(branches.find(one => one.name === data.head))}</Text>
+              )}
+            </Box>
           </Box>
           <Button key="refresh" label="รีเฟรช" onPress={() => void load($)} />
         </Box>

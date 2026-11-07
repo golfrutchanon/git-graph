@@ -12,6 +12,7 @@ import {
   describeTrack,
   escapeXml,
   layoutGraph,
+  outgoingOf,
   parseBranches,
   parseDiffNames,
   parseLog,
@@ -19,6 +20,7 @@ import {
   pickPending,
   splitPath,
   stampOf,
+  syncOf,
   trackTone,
 } from './graph'
 
@@ -275,27 +277,59 @@ test('labels wrap to a further line rather than leave the pane', () => {
   expect(height > 38 + 32 + 19).toBe(true)
 })
 
-test('dev, main and a remote each have a color, and the icons say where a branch lives', () => {
+test('the current branch reads apart from main and a remote, and icons say where each lives', () => {
   const remotes = new Set(['origin/dev', 'origin/old'])
-  const chips = chipsOf(['HEAD -> dev', 'origin/dev', 'main', 'side', 'origin/old'], remotes)
+  const chips = chipsOf(['HEAD -> dev', 'origin/dev', 'main', 'origin/old'], remotes)
 
   expect(chips).toEqual([
     { text: 'dev', kind: 'head', where: 'both' },
-    { text: 'main', kind: 'base', where: 'local' },
-    { text: 'side', kind: 'local', where: 'local' },
+    { text: 'main', kind: 'local', where: 'local' },
     { text: 'origin/old', kind: 'remote', where: 'remote' },
   ])
   expect(chipsOf(['HEAD -> main'], new Set())[0]?.kind).toBe('head')
 
-  const { source } = buildSvg([commit('c', [], ['HEAD -> dev', 'origin/dev'])], {
-    width: 800,
-    now: 2000,
-    remoteNames: remotes,
-  })
+  const { source } = buildSvg(
+    [commit('c', ['b'], ['HEAD -> dev', 'origin/dev']), commit('b', [], ['main', 'origin/old'])],
+    { width: 800, now: 2000, remoteNames: remotes },
+  )
 
+  expect(source.includes('circle cx="8" cy="8" r="6.6"')).toBe(true)
   expect(source.includes('circle cx="12" cy="4"')).toBe(true)
   expect(source.includes('M4.6 13a3.4')).toBe(true)
+  expect(source.includes('class="c-cloud"')).toBe(true)
   expect(source.includes('☁')).toBe(false)
+})
+
+test('what waits to be pushed is blue, the rest is history, and the head is a ring', () => {
+  const remotes = new Set(['origin/dev'])
+  const commits = [
+    commit('c', ['b'], ['HEAD -> dev']),
+    commit('b', ['a']),
+    commit('a', ['r'], ['origin/dev']),
+    commit('r', []),
+  ]
+
+  expect([...outgoingOf(commits, remotes)].sort()).toEqual(['b', 'c'])
+  expect([...outgoingOf(commits, new Set())]).toEqual([])
+  expect([...outgoingOf([commit('c', ['b'], ['HEAD -> dev', 'origin/dev']), commit('b', [])], remotes)]).toEqual([])
+
+  const { source } = buildSvg(commits, { width: 800, now: 2000, remoteNames: remotes })
+
+  expect(source.includes('<circle class="ring"')).toBe(true)
+  expect(source.includes('class="t s b"')).toBe(true)
+  expect(/class="dot"[^>]*fill="#3F73D9"/.test(source)).toBe(true)
+  expect(/class="dot"[^>]*fill="#6B3FA0"/.test(source)).toBe(true)
+})
+
+test('the sync count reads as in VS Code, and only for a branch with a remote copy', () => {
+  const branch = { name: 'dev', isRemote: false, upstream: 'origin/dev', track: 'ahead 3', time: 0 }
+
+  expect(syncOf(branch)).toBe('0↓ 3↑')
+  expect(syncOf({ ...branch, track: 'ahead 2, behind 1' })).toBe('1↓ 2↑')
+  expect(syncOf({ ...branch, track: '' })).toBe('0↓ 0↑')
+  expect(syncOf({ ...branch, upstream: '' })).toBe('')
+  expect(syncOf({ ...branch, track: 'gone' })).toBe('')
+  expect(syncOf(undefined)).toBe('')
 })
 
 test('a branch and its remote copy on different commits read as two chips', () => {
@@ -737,5 +771,5 @@ test('the graph draws in soft colors, with neither the strong set nor the earth 
   })
 
   for (const old of ['#2f81f7', '#db61a2', '#a371f7', '#6E4F3A', '#A5532A', '#EFE6D8']) expect(source.includes(old)).toBe(false)
-  expect(source.includes('#6BA3E8')).toBe(true)
+  expect(source.includes('#6B3FA0')).toBe(true)
 })
