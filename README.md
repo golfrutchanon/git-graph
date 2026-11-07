@@ -2,6 +2,7 @@
 
 A Claude Code mod: a read-only pane that draws a repository's commit graph beside the chat.
 
+- Changes, above the graph: files not committed yet, and files `dev` has that `main` does not
 - Tick any number of branches to show
 - See which branch leads or trails which, and by how many commits
 - See what waits to be pushed or pulled

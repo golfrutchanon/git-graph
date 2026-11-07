@@ -1,16 +1,21 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Compare, GraphData } from '../types'
+import type { Changes, Compare, FileChange, FileGroup, GraphData } from '../types'
 import {
   BRANCH_FORMAT,
   LOG_FORMAT,
   PAGE,
   buildSvg,
   describeCompare,
+  describeFile,
   describeTrack,
   parseBranches,
+  parseDiffNames,
   parseLog,
+  parseStatus,
+  pickPending,
+  stampOf,
 } from './graph'
 
 const PANE = 'git-graph'
@@ -21,26 +26,30 @@ const MAX_COMPARES = 12
 const MAX_PAGES = 15
 const MAX_COMMIT_OPTIONS = 60
 const MAX_BRANCH_ROWS = 60
+const MAX_FILE_ROWS = 40
 const CELL_PX = 8
 const MIN_WIDTH = 160
 
 const repoAtom = atom({ plugin: 'git-graph', key: 'repo' } as const, '', { shape: 'repo-1' })
 const slotsAtom = atom({ plugin: 'git-graph', key: 'slots' } as const, [], { shape: 'slots-1' })
 const menuAtom = atom({ plugin: 'git-graph', key: 'menu' } as const, false, { shape: 'menu-1' })
+const changesOpenAtom = atom({ plugin: 'git-graph', key: 'changesOpen' } as const, true, { shape: 'changes-open-1' })
 const pageAtom = atom({ plugin: 'git-graph', key: 'page' } as const, 0, { shape: 'page-1' })
 const recentsAtom = atom({ plugin: 'git-graph', key: 'recents' } as const, [], { shape: 'recents-1' })
-const dataAtom = atom({ plugin: 'git-graph', key: 'data' } as const, null, { shape: 'data-1' })
+const dataAtom = atom({ plugin: 'git-graph', key: 'data' } as const, null, { shape: 'data-2' })
 const detailAtom = atom({ plugin: 'git-graph', key: 'detail' } as const, null, { shape: 'detail-1' })
 
 // Read-only git, and only these subcommands: this pane never changes a repo.
-type ReadOnly = 'rev-parse' | 'symbolic-ref' | 'for-each-ref' | 'log' | 'rev-list' | 'show'
+// GIT_OPTIONAL_LOCKS below keeps `status` from refreshing the index as it reads.
+type ReadOnly = 'rev-parse' | 'symbolic-ref' | 'for-each-ref' | 'log' | 'rev-list' | 'show' | 'status' | 'diff'
+type GitResult = { isOk: boolean; stdout: string; stderr: string; isCut: boolean }
 
 async function git(
   $: EngineInterface,
   cwd: string,
   command: ReadOnly,
   args: readonly string[],
-): Promise<{ isOk: boolean; stdout: string; stderr: string }> {
+): Promise<GitResult> {
   try {
     const ran = await $.process.run(
       ['git', '-c', 'log.showSignature=false', command, ...args],
@@ -51,19 +60,35 @@ async function git(
       },
     )
 
-    return { isOk: ran.exitCode === 0, stdout: ran.stdout, stderr: ran.stderr }
+    return { isOk: ran.exitCode === 0, stdout: ran.stdout, stderr: ran.stderr, isCut: ran.isStdoutTruncated }
   } catch (error) {
-    return { isOk: false, stdout: '', stderr: String(error) }
+    return { isOk: false, stdout: '', stderr: String(error), isCut: false }
   }
 }
 
-async function fingerprint($: EngineInterface, root: string): Promise<string> {
-  const [refs, head] = await Promise.all([
+// What the pane depends on: the refs, and which files sit uncommitted.
+async function fingerprint($: EngineInterface, root: string): Promise<{ stamp: string; status: GitResult }> {
+  const [refs, head, status] = await Promise.all([
     git($, root, 'for-each-ref', ['--format=%(objectname) %(refname)', 'refs/heads', 'refs/remotes', 'refs/tags']),
     git($, root, 'rev-parse', ['--abbrev-ref', 'HEAD']),
+    git($, root, 'status', ['--porcelain=v1', '-z', '--untracked-files=all']),
   ])
 
-  return `${head.stdout}\n${refs.stdout}`
+  return { stamp: `${head.stdout}\n${refs.stdout}\n${stampOf(status.stdout)}`, status }
+}
+
+function toGroup(ran: GitResult, parse: (stdout: string) => FileChange[], failure: string): FileGroup {
+  if (!ran.isOk) {
+    return { files: [], total: 0, isPartial: false, error: `${failure}: ${ran.stderr.slice(0, 200)}` }
+  }
+  const files = parse(ran.stdout)
+
+  return { files: files.slice(0, MAX_FILE_ROWS), total: files.length, isPartial: ran.isCut, error: '' }
+}
+
+const NO_CHANGES: Changes = {
+  uncommitted: { files: [], total: 0, isPartial: false, error: '' },
+  pending: null,
 }
 
 async function compareOne(
@@ -92,6 +117,7 @@ async function load($: EngineInterface): Promise<void> {
     branches: [],
     commits: [],
     compares: [],
+    changes: NO_CHANGES,
     fingerprint: '',
     error: '',
   }
@@ -113,7 +139,7 @@ async function load($: EngineInterface): Promise<void> {
   }
 
   const root = top.stdout.trim()
-  const [headRan, branchRan, stamp, page, wanted] = await Promise.all([
+  const [headRan, branchRan, { stamp, status }, page, wanted] = await Promise.all([
     git($, root, 'symbolic-ref', ['--short', '-q', 'HEAD']),
     git($, root, 'for-each-ref', [`--format=${BRANCH_FORMAT}`, 'refs/heads', 'refs/remotes']),
     fingerprint($, root),
@@ -149,6 +175,26 @@ async function load($: EngineInterface): Promise<void> {
         (one): one is Compare => one !== null,
       )
 
+  // Three dots: what `from` changed since the two split, not what `to` gained since.
+  const pair = pickPending(branches, head)
+  const pending =
+    pair === null
+      ? null
+      : {
+          ...pair,
+          ...toGroup(
+            await git($, root, 'diff', [
+              '--name-status',
+              '-z',
+              '--end-of-options',
+              `refs/heads/${pair.to}...refs/heads/${pair.from}`,
+              '--',
+            ]),
+            parseDiffNames,
+            `เทียบ ${pair.from} กับ ${pair.to} ไม่ได้`,
+          ),
+        }
+
   if (mine !== loadNumber) return
   await update($, dataAtom, () => ({
     root,
@@ -156,6 +202,7 @@ async function load($: EngineInterface): Promise<void> {
     branches,
     commits: parseLog(logRan.stdout),
     compares,
+    changes: { uncommitted: toGroup(status, parseStatus, 'อ่านไฟล์ที่ยังไม่ commit ไม่ได้'), pending },
     fingerprint: stamp,
     error: logRan.isOk ? '' : `อ่าน git log ไม่ได้: ${logRan.stderr.slice(0, 200)}`,
   }))
@@ -225,16 +272,25 @@ export const register: Register = on => {
       await load($)
     }
 
-    // Refs moved (a commit, a checkout, a pull in any window): draw it again.
+    // Refs moved or a file changed (in any window): draw it again. A slow repo
+    // skips a tick rather than stacking `git status` on top of itself.
+    let isPolling = false
+
     $.clock.every(POLL_MS, () => {
+      if (isPolling) return
+      isPolling = true
       void (async () => {
-        const panes = await $.ui.panes()
+        try {
+          const panes = await $.ui.panes()
 
-        if (!panes.some(pane => pane.id === PANE)) return
-        const data = await read($, dataAtom)
+          if (!panes.some(pane => pane.id === PANE)) return
+          const data = await read($, dataAtom)
 
-        if (data === null || data.root === '') return
-        if ((await fingerprint($, data.root)) !== data.fingerprint) await load($)
+          if (data === null || data.root === '') return
+          if ((await fingerprint($, data.root)).stamp !== data.fingerprint) await load($)
+        } finally {
+          isPolling = false
+        }
       })()
     })
 
@@ -268,6 +324,18 @@ export const register: Register = on => {
         commits: data?.commits.length ?? 0,
         branches: data?.branches.map(one => one.name) ?? [],
         compares: data?.compares.map(describeCompare) ?? [],
+        uncommitted: data?.changes.uncommitted.files.map(describeFile) ?? [],
+        uncommittedTotal: data?.changes.uncommitted.total ?? 0,
+        pending:
+          data?.changes.pending == null
+            ? null
+            : {
+                from: data.changes.pending.from,
+                to: data.changes.pending.to,
+                total: data.changes.pending.total,
+                files: data.changes.pending.files.map(describeFile),
+                error: data.changes.pending.error,
+              },
       }),
     }
   })
@@ -275,10 +343,11 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const ui = $.ui.resolve(e)
     const { Box, Text, Button, Code } = ui
-    const [repo, slots, isMenuOpen, savedPage, recents, data, detail] = await Promise.all([
+    const [repo, slots, isMenuOpen, isChangesOpen, savedPage, recents, data, detail] = await Promise.all([
       read($, repoAtom),
       read($, slotsAtom),
       read($, menuAtom),
+      read($, changesOpenAtom),
       read($, pageAtom),
       read($, recentsAtom),
       read($, dataAtom),
@@ -356,6 +425,24 @@ export const register: Register = on => {
         await load($)
       })()
     }
+    const { uncommitted, pending } = data.changes
+    const countOf = (group: FileGroup) => (group.error !== '' ? '?' : `${group.total}${group.isPartial ? '+' : ''}`)
+    const fileGroup = (title: string, group: FileGroup) => (
+      <Box flexDirection="column">
+        <Text weight="semibold">
+          {title} ({countOf(group)} ไฟล์)
+        </Text>
+        {group.error !== '' && <Text color="error">{group.error}</Text>}
+        {group.error === '' && group.total === 0 && <Text dimColor>ไม่มี</Text>}
+        {group.files.map(file => (
+          <Text>{describeFile(file)}</Text>
+        ))}
+        {group.total > group.files.length && (
+          <Text dimColor>และอีก {group.total - group.files.length} ไฟล์</Text>
+        )}
+        {group.isPartial && <Text dimColor>รายการยาวเกินที่อ่านได้ จึงนับไม่ครบ</Text>}
+      </Box>
+    )
     const drawn =
       'Svg' in ui
         ? buildSvg(commits, {
@@ -377,6 +464,22 @@ export const register: Register = on => {
         </Box>
 
         {data.error !== '' && <Text color="error">{data.error}</Text>}
+
+        <Button
+          key="changes"
+          label={`Changes: ยังไม่ commit ${countOf(uncommitted)}${pending === null ? '' : ` · ${pending.from}→${pending.to} ${countOf(pending)}`} ${isChangesOpen ? '▴' : '▾'}`}
+          onPress={() => void update($, changesOpenAtom, open => !open)}
+        />
+        {isChangesOpen && (
+          <Box flexDirection="column" gap={1}>
+            {fileGroup(`ยังไม่ commit บน ${data.head === '' ? 'detached HEAD' : data.head}`, uncommitted)}
+            {pending === null ? (
+              <Text dimColor>ไม่มีกิ่ง dev กับ main ให้เทียบ</Text>
+            ) : (
+              fileGroup(`${pending.from} ยังไม่เข้า ${pending.to}`, pending)
+            )}
+          </Box>
+        )}
 
         <Button
           key="branches"

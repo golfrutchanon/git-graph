@@ -1,4 +1,4 @@
-import type { Branch, Commit, Compare } from '../types'
+import type { Branch, Commit, Compare, FileChange, FileKind } from '../types'
 
 // Pure code only: parsing git's output, laying out lanes, drawing the SVG.
 // Nothing here runs a command, so it can be tested with plain strings.
@@ -78,6 +78,111 @@ export function describeTrack(branch: Branch): string {
   if (behind !== undefined) parts.push(`รอ pull ${behind}`)
 
   return `${branch.name}: ${parts.join(' · ')} commit`
+}
+
+const KIND_BY_LETTER: Readonly<Record<string, FileKind>> = {
+  M: 'modified',
+  T: 'modified',
+  A: 'added',
+  D: 'deleted',
+  R: 'renamed',
+  C: 'copied',
+}
+
+// `git status --porcelain=v1 -z`: "XY path\0", and a rename adds "from\0" after it.
+export function parseStatus(stdout: string): FileChange[] {
+  const parts = stdout.split('\0')
+  const changes: FileChange[] = []
+
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i] ?? ''
+
+    if (part.length < 4 || part[2] !== ' ') continue
+    const x = part[0] ?? ' '
+    const y = part[1] ?? ' '
+    const path = part.slice(3)
+    const xy = x + y
+    const kind: FileKind =
+      xy === '??'
+        ? 'untracked'
+        : x === 'U' || y === 'U' || xy === 'AA' || xy === 'DD'
+          ? 'conflict'
+          : y === 'D'
+            ? 'deleted'
+            : (KIND_BY_LETTER[x === ' ' ? y : x] ?? 'modified')
+
+    if (/[RC]/.test(xy)) {
+      i += 1
+      changes.push({ kind, path, from: parts[i] ?? '' })
+    } else {
+      changes.push({ kind, path })
+    }
+  }
+
+  return changes
+}
+
+// `git diff --name-status -z`: "M\0path\0", and "R100\0from\0to\0" for a rename.
+export function parseDiffNames(stdout: string): FileChange[] {
+  const parts = stdout.split('\0')
+  const changes: FileChange[] = []
+  let i = 0
+
+  while (i + 1 < parts.length) {
+    const letter = (parts[i] ?? '')[0] ?? ''
+    const first = parts[i + 1] ?? ''
+    const kind = KIND_BY_LETTER[letter]
+
+    if (kind === undefined || first === '') {
+      i += 1
+    } else if (letter === 'R' || letter === 'C') {
+      changes.push({ kind, path: parts[i + 2] ?? '', from: first })
+      i += 3
+    } else {
+      changes.push({ kind, path: first })
+      i += 2
+    }
+  }
+
+  return changes
+}
+
+// dev against main when the repo has them; otherwise the checked-out branch stands
+// in for dev, and master for main.
+export function pickPending(
+  branches: readonly Branch[],
+  head: string,
+): { from: string; to: string } | null {
+  const local = new Set(branches.filter(one => !one.isRemote).map(one => one.name))
+  const to = local.has('main') ? 'main' : local.has('master') ? 'master' : ''
+  const from = local.has('dev') ? 'dev' : head
+
+  return to === '' || from === '' || from === to ? null : { from, to }
+}
+
+const KIND_LABEL: Readonly<Record<FileKind, string>> = {
+  modified: 'แก้ไข',
+  added: 'เพิ่ม',
+  deleted: 'ลบ',
+  renamed: 'เปลี่ยนชื่อ',
+  copied: 'คัดลอก',
+  untracked: 'ไฟล์ใหม่',
+  conflict: 'ชนกัน',
+}
+
+export function describeFile({ kind, path, from }: FileChange): string {
+  return `${KIND_LABEL[kind]} · ${from === undefined ? path : `${from} → ${path}`}`
+}
+
+// A short stamp of a long text, so the poll keeps no copy of the whole file list.
+export function stampOf(text: string): string {
+  let hash = 0x811c9dc5
+
+  for (let i = 0; i < text.length; i++) {
+    hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193)
+  }
+
+  return `${text.length}:${(hash >>> 0).toString(16)}`
 }
 
 export type Edge = { from: number; to: number; color: number; target: string }

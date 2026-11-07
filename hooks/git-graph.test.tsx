@@ -1,7 +1,22 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
+import type { TestBody } from 'claude-code/testing'
 
 import type { Commit } from '../types'
-import { buildSvg, chipsOf, describeCompare, describeTrack, escapeXml, layoutGraph, parseBranches, parseLog } from './graph'
+import {
+  buildSvg,
+  chipsOf,
+  describeCompare,
+  describeFile,
+  describeTrack,
+  escapeXml,
+  layoutGraph,
+  parseBranches,
+  parseDiffNames,
+  parseLog,
+  parseStatus,
+  pickPending,
+  stampOf,
+} from './graph'
 
 const commit = (hash: string, parents: string[], refs: string[] = []): Commit => ({
   hash,
@@ -322,4 +337,235 @@ test('a very narrow pane stays top-aligned and its label stays clear of the lane
 
   expect(source.includes('preserveAspectRatio="xMinYMin meet"')).toBe(true)
   expect(chipX >= 36).toBe(true)
+})
+
+// Both strings are what git 2.54 printed for a real repo, with staged and unstaged
+// changes, a rename, a Thai file name with a space, and files not yet added.
+test('status reads staged, unstaged, renamed, Thai and untracked files', () => {
+  const stdout = 'D  added.txt\0R  mod2.txt\0mod.txt\0 M ไฟล์ ไทย.txt\0?? added.txt\0?? untracked.txt\0'
+
+  expect(parseStatus(stdout)).toEqual([
+    { kind: 'deleted', path: 'added.txt' },
+    { kind: 'renamed', path: 'mod2.txt', from: 'mod.txt' },
+    { kind: 'modified', path: 'ไฟล์ ไทย.txt' },
+    { kind: 'untracked', path: 'added.txt' },
+    { kind: 'untracked', path: 'untracked.txt' },
+  ])
+})
+
+test('status tells a conflict and a file deleted after staging', () => {
+  expect(parseStatus('UU a\0AA b\0DD c\0MD d\0AM e\0').map(one => one.kind)).toEqual([
+    'conflict',
+    'conflict',
+    'conflict',
+    'deleted',
+    'added',
+  ])
+  expect(parseStatus('')).toEqual([])
+})
+
+test('a diff of names reads every kind, with a rename from and to', () => {
+  const stdout = 'A\0added.txt\0D\0gone.txt\0M\0mod.txt\0R100\0old.txt\0new.txt\0'
+
+  expect(parseDiffNames(stdout)).toEqual([
+    { kind: 'added', path: 'added.txt' },
+    { kind: 'deleted', path: 'gone.txt' },
+    { kind: 'modified', path: 'mod.txt' },
+    { kind: 'renamed', path: 'new.txt', from: 'old.txt' },
+  ])
+  expect(parseDiffNames('')).toEqual([])
+})
+
+test('a file reads in Thai, and a rename shows both names', () => {
+  expect(describeFile({ kind: 'modified', path: 'a.ts' })).toBe('แก้ไข · a.ts')
+  expect(describeFile({ kind: 'renamed', path: 'b.ts', from: 'a.ts' })).toBe('เปลี่ยนชื่อ · a.ts → b.ts')
+})
+
+test('dev against main, with sensible stand-ins, and nothing to compare says so', () => {
+  const local = (...names: string[]) =>
+    names.map(name => ({ name, isRemote: false, upstream: '', track: '', time: 0 }))
+
+  expect(pickPending(local('dev', 'main', 'x'), 'x')).toEqual({ from: 'dev', to: 'main' })
+  expect(pickPending(local('x', 'master'), 'x')).toEqual({ from: 'x', to: 'master' })
+  expect(pickPending(local('main'), 'main')).toBe(null)
+  expect(pickPending(local('x'), 'x')).toBe(null)
+  expect(pickPending([{ name: 'main', isRemote: true, upstream: '', track: '', time: 0 }], 'x')).toBe(null)
+})
+
+test('a stamp changes with the text and stays short', () => {
+  expect(stampOf('a') === stampOf('b')).toBe(false)
+  expect(stampOf('x'.repeat(100000)).length < 20).toBe(true)
+})
+
+const mountWith = async (
+  $: Parameters<TestBody>[0],
+  on: Parameters<TestBody>[1],
+  answers: { status?: string; diff?: string; isDiffOk?: boolean; heads?: string[]; head?: string },
+) => {
+  const calls: (readonly string[])[] = []
+  const heads = answers.heads ?? ['dev', 'main']
+
+  on('process.run', (_, e) => {
+    const argv = e.argv as readonly string[]
+
+    calls.push(argv)
+    const isDiff = argv.includes('diff')
+    const stdout = isDiff
+      ? (answers.diff ?? '')
+      : argv.includes('status')
+        ? (answers.status ?? '')
+        : argv.includes('log')
+          ? 'h1\x1f\x1fHEAD -> dev\x1fone\x1fa\x1f1000\x1e'
+          : argv.includes('rev-list')
+            ? '1\t0\n'
+            : argv.includes('symbolic-ref')
+              ? `${answers.head ?? 'dev'}\n`
+              : argv.includes('for-each-ref')
+                ? heads.map(n => `refs/heads/${n}\t${n}\t\t\t\t1000`).join('\n')
+                : '/r\n'
+
+    return {
+      value: {
+        exitCode: isDiff && answers.isDiffOk === false ? 128 : 0,
+        stdout,
+        stderr: isDiff && answers.isDiffOk === false ? 'fatal: no merge base' : '',
+        isStdoutTruncated: false,
+        isStderrTruncated: false,
+      },
+    }
+  })
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('store.set', () => ({ value: undefined }))
+  await $.tool.call({ tool: 'mcp__git-graph__open', repo: '/r' } as never)
+
+  const ui = await $.ui.mount({
+    plugin: 'git-graph',
+    component: 'Pane',
+    requestId: 'git-graph',
+    surface: 'desktop',
+    props: {
+      title: 'Git Graph',
+      isFocused: false,
+      bodyColumns: 50,
+      placement: 'dock',
+      scroll: { offset: 0, bodyRows: 40 },
+      view: {},
+    },
+  })
+
+  return { ui, calls }
+}
+
+test('Changes lists uncommitted files and what dev has not given main', async ($, on) => {
+  const { ui, calls } = await mountWith($, on, {
+    status: ' M hooks/a.ts\0?? ใหม่.txt\0',
+    diff: 'M\0hooks/b.ts\0',
+  })
+  const has = async (text: RegExp) => (await ui.find({ type: 'Text', text })) !== undefined
+
+  expect(await has(/ยังไม่ commit บน dev \(2 ไฟล์\)/)).toBe(true)
+  expect(await has(/แก้ไข · hooks\/a\.ts/)).toBe(true)
+  expect(await has(/ไฟล์ใหม่ · ใหม่\.txt/)).toBe(true)
+  expect(await has(/dev ยังไม่เข้า main \(1 ไฟล์\)/)).toBe(true)
+  expect(await has(/แก้ไข · hooks\/b\.ts/)).toBe(true)
+  expect(calls.some(argv => argv.includes('refs/heads/main...refs/heads/dev'))).toBe(true)
+  await ui.unmount()
+})
+
+test('Changes folds up, keeping its counts on the button', async ($, on) => {
+  const { ui } = await mountWith($, on, { status: ' M a.ts\0' })
+
+  await ui.press({ key: 'changes' })
+  expect((await ui.find({ type: 'Text', text: /แก้ไข · a\.ts/ })) === undefined).toBe(true)
+  expect((await ui.find({ type: 'Button', key: 'changes' })) !== undefined).toBe(true)
+  await ui.press({ key: 'changes' })
+  expect((await ui.find({ type: 'Text', text: /แก้ไข · a\.ts/ })) !== undefined).toBe(true)
+  await ui.unmount()
+})
+
+test('Changes says when there is nothing, and when it cannot compare', async ($, on) => {
+  const { ui } = await mountWith($, on, { isDiffOk: false })
+
+  expect((await ui.find({ type: 'Text', text: /^ไม่มี$/ })) !== undefined).toBe(true)
+  expect((await ui.find({ type: 'Text', text: /เทียบ dev กับ main ไม่ได้: fatal: no merge base/ })) !== undefined).toBe(true)
+  await ui.unmount()
+})
+
+test('a repo with no main says there is nothing to compare, and runs no diff', async ($, on) => {
+  const { ui, calls } = await mountWith($, on, { heads: ['dev'] })
+
+  expect((await ui.find({ type: 'Text', text: /ไม่มีกิ่ง dev กับ main ให้เทียบ/ })) !== undefined).toBe(true)
+  expect(calls.some(argv => argv.includes('diff'))).toBe(false)
+  await ui.unmount()
+})
+
+test('a long list stops at 40 rows and counts the rest', async ($, on) => {
+  const status = Array.from({ length: 45 }, (_, i) => ` M f${i}.ts\0`).join('')
+  const { ui } = await mountWith($, on, { status })
+
+  expect((await ui.find({ type: 'Text', text: /แก้ไข · f39\.ts/ })) !== undefined).toBe(true)
+  expect((await ui.find({ type: 'Text', text: /แก้ไข · f40\.ts/ })) === undefined).toBe(true)
+  expect((await ui.find({ type: 'Text', text: /และอีก 5 ไฟล์/ })) !== undefined).toBe(true)
+  await ui.unmount()
+})
+
+test('the pane only ever runs read-only git', async ($, on) => {
+  const { ui, calls } = await mountWith($, on, { status: ' M a.ts\0', diff: 'M\0b.ts\0' })
+  const allowed = ['rev-parse', 'symbolic-ref', 'for-each-ref', 'log', 'rev-list', 'show', 'status', 'diff']
+
+  for (const argv of calls.filter(one => one[0] === 'git')) {
+    expect(allowed.includes(argv[3] ?? '')).toBe(true)
+  }
+  await ui.unmount()
+})
+
+test('a file edited in any window shows up on the next poll, with no ref moving', async ($, on) => {
+  const clock = mock.clock(on)
+  let status = ''
+
+  on('process.run', (_, e) => {
+    const argv = e.argv as readonly string[]
+    const stdout = argv.includes('status')
+      ? status
+      : argv.includes('symbolic-ref')
+        ? 'dev\n'
+        : argv.includes('for-each-ref')
+          ? 'refs/heads/dev\tdev\t\t\t\t1000'
+          : argv.includes('log')
+            ? ''
+            : '/r\n'
+
+    return {
+      value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+    }
+  })
+  on('command.register', () => ({ value: { command: 'git-graph' } }))
+  on('tool.register', () => ({ value: { name: 'mcp__git-graph__open' } }) as never)
+  on('store.get', () => ({ value: [] }) as never)
+  on('store.set', () => ({ value: undefined }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.panes', () => ({ value: [{ id: 'git-graph' }] }) as never)
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/r', surface: 'desktop', isInteractive: true })
+
+  const ui = await $.ui.mount({
+    plugin: 'git-graph',
+    component: 'Pane',
+    requestId: 'git-graph',
+    surface: 'desktop',
+    props: {
+      title: 'Git Graph',
+      isFocused: false,
+      bodyColumns: 50,
+      placement: 'dock',
+      scroll: { offset: 0, bodyRows: 40 },
+      view: {},
+    },
+  })
+
+  expect((await ui.find({ type: 'Text', text: /แก้ไข · a\.ts/ })) === undefined).toBe(true)
+  status = ' M a.ts\0'
+  await clock.advance(5000)
+  expect((await ui.find({ type: 'Text', text: /แก้ไข · a\.ts/ })) !== undefined).toBe(true)
+  await ui.unmount()
 })
