@@ -652,3 +652,33 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await ui.unmount()
   })
 }
+
+test('with nothing waiting, Changes is one green line with nothing to hide', async ($, on) => {
+  const { ui } = await mountWith($, on, {})
+
+  expect((await ui.find({ type: 'Text', text: /^ครบแล้ว$/ })) !== undefined).toBe(true)
+  expect((await ui.find({ type: 'Text', text: /^ไม่มีไฟล์ค้าง$/ })) === undefined).toBe(true)
+  expect((await ui.find({ type: 'Text', text: /ยังไม่ commit บน dev/ })) === undefined).toBe(true)
+  expect((await ui.find({ type: 'Button', key: 'changes' })) === undefined).toBe(true)
+  await ui.unmount()
+})
+
+test('with one side empty, both boxes show and the empty one says so', async ($, on) => {
+  const { ui } = await mountWith($, on, { diff: 'M\0b.ts\0' })
+
+  expect((await ui.find({ type: 'Text', text: /ยังไม่ commit บน dev/ })) !== undefined).toBe(true)
+  expect((await ui.find({ type: 'Text', text: /^ไม่มีไฟล์ค้าง$/ })) !== undefined).toBe(true)
+  expect((await ui.find({ type: 'Text', text: /^b\.ts$/ })) !== undefined).toBe(true)
+  await ui.unmount()
+})
+
+test('the graph draws in the earth palette, with no blue or pink left', () => {
+  const { source } = buildSvg([commit('c', ['b'], ['HEAD -> dev', 'tag: v1', 'origin/dev']), commit('b', [])], {
+    width: 600,
+    now: 2000,
+    remoteNames: new Set(['origin/dev']),
+  })
+
+  for (const old of ['#2f81f7', '#db61a2', '#a371f7', '#ddf4ff', '#10304f']) expect(source.includes(old)).toBe(false)
+  expect(source.includes('#6E4F3A')).toBe(true)
+})

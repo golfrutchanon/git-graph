@@ -384,7 +384,7 @@ function cut(text: string, room: number): string {
   return chars.length <= room ? text : `${chars.slice(0, Math.max(1, room - 1)).join('')}…`
 }
 
-const PALETTE = ['#2f81f7', '#e5534b', '#2da44e', '#bf8700', '#a371f7', '#db61a2', '#1b9aaa', '#d4762c']
+const PALETTE = ['#A5532A', '#5F6F3A', '#47636E', '#B08A3C', '#7A5C48', '#8F3A2B', '#6F7F6A', '#9A7B5B']
 const paint = (color: number) => PALETTE[color % PALETTE.length]
 
 const ROW = 38
@@ -407,22 +407,22 @@ export const PAGE = 100
 const DRAW_LIMIT = 88000
 
 const STYLE = `
-.bg{fill:#fff}.t{fill:#1f2328}.d{fill:#656d76}.h{fill:transparent}
-.r:hover .h{fill:rgba(47,129,247,.12)}
-.c-head{fill:#2f81f7}.ct-head{fill:#fff}
-.c-local{fill:#ddf4ff;stroke:#2f81f7}.ct-local{fill:#0a3069}
-.c-remote{fill:#eaeef2;stroke:#afb8c1}.ct-remote{fill:#424a53}
-.c-tag{fill:#fff8c5;stroke:#bf8700}.ct-tag{fill:#6f4e00}
+.bg{fill:#fff}.t{fill:#2B2620}.d{fill:#6B6053}.h{fill:transparent}
+.r:hover .h{fill:rgba(156,79,36,.10)}
+.c-head{fill:#6E4F3A}.ct-head{fill:#fff}
+.c-local{fill:#EFE6D8;stroke:#A08468}.ct-local{fill:#4A3526}
+.c-remote{fill:#EEEAE3;stroke:#B5AB9C}.ct-remote{fill:#4F483E}
+.c-tag{fill:#F3E7C8;stroke:#B08A3C}.ct-tag{fill:#5E4A12}
 .dot{stroke:#fff}
 .s{transition:transform .25s ease-out}
 .r:hover .s{transform:translateX(var(--x,0));transition:transform var(--d,1s) linear .35s}
 text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans Thai",sans-serif;font-size:${FONT}px}
 .m{font-family:ui-monospace,Menlo,monospace;font-size:${CHIP_FONT}px}
 @media (prefers-color-scheme:dark){
-.bg{fill:#1c1c1e}.t{fill:#f2f2f2}.d{fill:#a1a1aa}.dot{stroke:#1c1c1e}
-.c-local{fill:#10304f;stroke:#2f81f7}.ct-local{fill:#cfe6ff}
-.c-remote{fill:#33363b;stroke:#6e7681}.ct-remote{fill:#d6d8da}
-.c-tag{fill:#3d2f00;stroke:#bf8700}.ct-tag{fill:#f2d35e}
+.bg{fill:#1c1c1e}.t{fill:#F0EBE3}.d{fill:#A79C8E}.dot{stroke:#1c1c1e}
+.c-local{fill:#3A2E24;stroke:#A08468}.ct-local{fill:#EADCC8}
+.c-remote{fill:#33302B;stroke:#7A7063}.ct-remote{fill:#DDD6CA}
+.c-tag{fill:#3A3018;stroke:#B08A3C}.ct-tag{fill:#E8D49A}
 }
 `
 

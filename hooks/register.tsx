@@ -35,24 +35,26 @@ const MAX_BRANCH_ROWS = 60
 const MAX_FILE_ROWS = 40
 const CELL_PX = 8
 const MIN_WIDTH = 160
-const KIND_COLUMN = 9
+const KIND_COLUMN = 7
 
-// Theme keys, so the words follow light and dark. A tint is the hue at under 10%,
-// which reads as a surface on either theme; the terminal has no such thing.
-const TONES: Readonly<Record<Tone, { color: string; tint: string }>> = {
-  calm: { color: 'subtle', tint: '#8080800f' },
-  good: { color: 'success', tint: '#22c55e14' },
-  ahead: { color: 'suggestion', tint: '#3b82f614' },
-  attention: { color: 'warning', tint: '#f59e0b17' },
+// One earth palette for the whole pane. The words are dark enough to read on the
+// light theme at 5:1 or better; a hook cannot ask which theme is on, so `key` keeps
+// the terminal on theme colors, and the dark desktop theme reads these words low.
+type Paint = Tone | 'danger'
+const TONES: Readonly<Record<Paint, { color: string; line: string; tint: string; key: string }>> = {
+  calm: { color: '#6B6053', line: '#8C7F7080', tint: '#8C7F7017', key: 'subtle' },
+  good: { color: '#566334', line: '#7D8C4F99', tint: '#7D8C4F24', key: 'success' },
+  ahead: { color: '#47636E', line: '#6B8A9699', tint: '#6B8A9624', key: 'suggestion' },
+  attention: { color: '#9C4F24', line: '#C4703A99', tint: '#C4703A24', key: 'warning' },
+  danger: { color: '#8F3A2B', line: '#8F3A2B99', tint: '#8F3A2B1F', key: 'error' },
 }
-const KIND_COLOR: Readonly<Record<FileKind, string>> = {
-  modified: 'warning',
-  added: 'success',
-  untracked: 'success',
-  deleted: 'error',
-  renamed: 'suggestion',
-  copied: 'suggestion',
-  conflict: 'error',
+const KIND_PAINT: Readonly<Record<Exclude<FileKind, 'modified'>, Paint>> = {
+  added: 'good',
+  untracked: 'good',
+  deleted: 'danger',
+  renamed: 'ahead',
+  copied: 'ahead',
+  conflict: 'danger',
 }
 const CHANGES_STATE: Readonly<Record<Tone, string>> = {
   calm: '',
@@ -395,10 +397,12 @@ export const register: Register = on => {
       .filter(one => (picked.length > 0 ? picked.includes(one.name) : one.name === data?.head))
       .map(one => ({ line: describeTrack(one), tone: trackTone(one) }))
       .filter(one => one.line !== '')
-    const zone = (tone: Tone) => ({
+    const isTerminal = e.surface === 'terminal'
+    const colorOf = (paint: Paint) => (isTerminal ? TONES[paint].key : TONES[paint].color)
+    const zone = (paint: Paint) => ({
       borderStyle: 'round',
-      borderColor: TONES[tone].color,
-      ...(e.surface === 'terminal' ? {} : { backgroundColor: TONES[tone].tint }),
+      borderColor: isTerminal ? TONES[paint].key : TONES[paint].line,
+      ...(isTerminal ? {} : { backgroundColor: TONES[paint].tint }),
     })
 
     const showBranches = (change: (current: string[]) => string[]) => {
@@ -463,13 +467,13 @@ export const register: Register = on => {
     }
     const { uncommitted, pending } = data.changes
     const countOf = (group: FileGroup) => (group.error !== '' ? '?' : `${group.total}${group.isPartial ? '+' : ''}`)
-    const fileRow = (file: FileChange) => {
+    const fileRow = (file: FileChange, tone: Tone) => {
       const { dir, name } = splitPath(file.path)
 
       return (
         <Box flexDirection="row" gap="sm">
           <Box width={KIND_COLUMN} flexShrink={0}>
-            <Text size="footnote" weight="medium" color={KIND_COLOR[file.kind]}>
+            <Text size="footnote" weight="medium" color={colorOf(file.kind === 'modified' ? tone : KIND_PAINT[file.kind])}>
               {KIND_LABEL[file.kind]}
             </Text>
           </Box>
@@ -489,12 +493,13 @@ export const register: Register = on => {
         </Box>
       )
     }
-    // Color only where there is something to do: an empty list stays quiet.
+    // Each group is a box of its own state's color; an empty one stays quiet.
     const fileGroup = (title: string, group: FileGroup, tone: Tone) => {
-      const color = group.total > 0 ? TONES[tone].color : undefined
+      const isBusy = group.total > 0 || group.error !== ''
+      const color = isBusy ? colorOf(tone) : undefined
 
       return (
-        <Box flexDirection="column" gap="xs">
+        <Box flexDirection="column" gap="xs" padding="md" {...zone(isBusy ? tone : 'calm')}>
           <Box flexDirection="row" justifyContent="space-between" gap="sm">
             <Box flexShrink={1}>
               <Text weight="semibold" color={color}>
@@ -507,13 +512,13 @@ export const register: Register = on => {
               </Text>
             </Box>
           </Box>
-          {group.error !== '' && <Text color="error">{group.error}</Text>}
+          {group.error !== '' && <Text color={colorOf('danger')}>{group.error}</Text>}
           {group.error === '' && group.total === 0 && (
             <Text size="footnote" dimColor>
               ไม่มีไฟล์ค้าง
             </Text>
           )}
-          {group.files.map(fileRow)}
+          {group.files.map(file => fileRow(file, tone))}
           {group.total > group.files.length && (
             <Text size="footnote" dimColor>
               และอีก {group.total - group.files.length} ไฟล์
@@ -558,37 +563,39 @@ export const register: Register = on => {
           <Button key="refresh" label="รีเฟรช" onPress={() => void load($)} />
         </Box>
 
-        {data.error !== '' && <Text color="error">{data.error}</Text>}
+        {data.error !== '' && <Text color={colorOf('danger')}>{data.error}</Text>}
 
-        <Box flexDirection="column" gap="md" padding="md" {...zone(tone)}>
+        <Box flexDirection="column" gap="md" padding="md" {...zone(tone === 'good' ? 'good' : 'calm')}>
           <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap="sm">
             <Box flexDirection="column" flexShrink={1}>
               {zoneTitle('Changes')}
-              <Text size="footnote" weight="medium" color={TONES[tone].color}>
+              <Text size="footnote" weight="medium" color={colorOf(tone === 'good' ? 'good' : 'calm')}>
                 {CHANGES_STATE[tone]}
               </Text>
             </Box>
-            <Button
-              key="changes"
-              label={isChangesOpen ? 'ซ่อน' : 'แสดง'}
-              onPress={() => void update($, changesOpenAtom, open => !open)}
-            />
+            {tone !== 'good' && (
+              <Button
+                key="changes"
+                label={isChangesOpen ? 'ซ่อน' : 'แสดง'}
+                onPress={() => void update($, changesOpenAtom, open => !open)}
+              />
+            )}
           </Box>
-          {isChangesOpen ? (
+          {tone !== 'good' && isChangesOpen && (
             <Box flexDirection="column" gap="md">
               {fileGroup(`ยังไม่ commit บน ${data.head === '' ? 'detached HEAD' : data.head}`, uncommitted, 'attention')}
-              {pending === null ? (
-                <Text size="footnote" dimColor>
-                  ไม่มีกิ่ง dev กับ main ให้เทียบ
-                </Text>
-              ) : (
-                fileGroup(`${pending.from} ยังไม่เข้า ${pending.to}`, pending, 'ahead')
-              )}
+              {pending !== null && fileGroup(`${pending.from} ยังไม่เข้า ${pending.to}`, pending, 'ahead')}
             </Box>
-          ) : (
+          )}
+          {tone !== 'good' && !isChangesOpen && (
             <Text size="footnote">
               ยังไม่ commit {countOf(uncommitted)}
               {pending === null ? '' : ` · ${pending.from} ยังไม่เข้า ${pending.to} ${countOf(pending)}`}
+            </Text>
+          )}
+          {pending === null && (tone === 'good' || isChangesOpen) && (
+            <Text size="footnote" dimColor>
+              ไม่มีกิ่ง dev กับ main ให้เทียบ
             </Text>
           )}
         </Box>
@@ -631,12 +638,12 @@ export const register: Register = on => {
           )}
           <Box flexDirection="column" gap="xs">
             {tracked.slice(0, MAX_COMPARES).map(one => (
-              <Text size="footnote" weight="medium" color={TONES[one.tone].color}>
+              <Text size="footnote" weight="medium" color={colorOf(one.tone)}>
                 {one.line}
               </Text>
             ))}
             {data.compares.map(one => (
-              <Text size="footnote" weight="medium" color={TONES[compareTone(one)].color}>
+              <Text size="footnote" weight="medium" color={colorOf(compareTone(one))}>
                 {describeCompare(one)}
               </Text>
             ))}
@@ -719,7 +726,7 @@ export const register: Register = on => {
         {detail !== null && <Code source={detail.text} />}
 
         {repoControls && (
-          <Box flexDirection="column" padding="md" {...(e.surface === 'terminal' ? {} : { backgroundColor: TONES.calm.tint })}>
+          <Box flexDirection="column" padding="md" {...(isTerminal ? {} : { backgroundColor: TONES.calm.tint })}>
             {repoControls}
           </Box>
         )}
