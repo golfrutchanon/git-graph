@@ -4,7 +4,9 @@ import type { TestBody } from 'claude-code/testing'
 import type { Commit } from '../types'
 import {
   buildSvg,
+  changesTone,
   chipsOf,
+  compareTone,
   describeCompare,
   describeFile,
   describeTrack,
@@ -15,7 +17,9 @@ import {
   parseLog,
   parseStatus,
   pickPending,
+  splitPath,
   stampOf,
+  trackTone,
 } from './graph'
 
 const commit = (hash: string, parents: string[], refs: string[] = []): Commit => ({
@@ -463,11 +467,16 @@ test('Changes lists uncommitted files and what dev has not given main', async ($
   })
   const has = async (text: RegExp) => (await ui.find({ type: 'Text', text })) !== undefined
 
-  expect(await has(/ยังไม่ commit บน dev \(2 ไฟล์\)/)).toBe(true)
-  expect(await has(/แก้ไข · hooks\/a\.ts/)).toBe(true)
-  expect(await has(/ไฟล์ใหม่ · ใหม่\.txt/)).toBe(true)
-  expect(await has(/dev ยังไม่เข้า main \(1 ไฟล์\)/)).toBe(true)
-  expect(await has(/แก้ไข · hooks\/b\.ts/)).toBe(true)
+  expect(await has(/ยังไม่ commit บน dev/)).toBe(true)
+  expect(await has(/^2 ไฟล์$/)).toBe(true)
+  expect(await has(/^a\.ts$/)).toBe(true)
+  expect(await has(/^hooks\/$/)).toBe(true)
+  expect(await has(/^แก้ไข$/)).toBe(true)
+  expect(await has(/^ใหม่\.txt$/)).toBe(true)
+  expect(await has(/^ไฟล์ใหม่$/)).toBe(true)
+  expect(await has(/dev ยังไม่เข้า main/)).toBe(true)
+  expect(await has(/^1 ไฟล์$/)).toBe(true)
+  expect(await has(/^b\.ts$/)).toBe(true)
   expect(calls.some(argv => argv.includes('refs/heads/main...refs/heads/dev'))).toBe(true)
   await ui.unmount()
 })
@@ -476,17 +485,17 @@ test('Changes folds up, keeping its counts on the button', async ($, on) => {
   const { ui } = await mountWith($, on, { status: ' M a.ts\0' })
 
   await ui.press({ key: 'changes' })
-  expect((await ui.find({ type: 'Text', text: /แก้ไข · a\.ts/ })) === undefined).toBe(true)
-  expect((await ui.find({ type: 'Button', key: 'changes' })) !== undefined).toBe(true)
+  expect((await ui.find({ type: 'Text', text: /^a\.ts$/ })) === undefined).toBe(true)
+  expect((await ui.find({ type: 'Text', text: /ยังไม่ commit 1/ })) !== undefined).toBe(true)
   await ui.press({ key: 'changes' })
-  expect((await ui.find({ type: 'Text', text: /แก้ไข · a\.ts/ })) !== undefined).toBe(true)
+  expect((await ui.find({ type: 'Text', text: /^a\.ts$/ })) !== undefined).toBe(true)
   await ui.unmount()
 })
 
 test('Changes says when there is nothing, and when it cannot compare', async ($, on) => {
   const { ui } = await mountWith($, on, { isDiffOk: false })
 
-  expect((await ui.find({ type: 'Text', text: /^ไม่มี$/ })) !== undefined).toBe(true)
+  expect((await ui.find({ type: 'Text', text: /^ไม่มีไฟล์ค้าง$/ })) !== undefined).toBe(true)
   expect((await ui.find({ type: 'Text', text: /เทียบ dev กับ main ไม่ได้: fatal: no merge base/ })) !== undefined).toBe(true)
   await ui.unmount()
 })
@@ -503,8 +512,8 @@ test('a long list stops at 40 rows and counts the rest', async ($, on) => {
   const status = Array.from({ length: 45 }, (_, i) => ` M f${i}.ts\0`).join('')
   const { ui } = await mountWith($, on, { status })
 
-  expect((await ui.find({ type: 'Text', text: /แก้ไข · f39\.ts/ })) !== undefined).toBe(true)
-  expect((await ui.find({ type: 'Text', text: /แก้ไข · f40\.ts/ })) === undefined).toBe(true)
+  expect((await ui.find({ type: 'Text', text: /^f39\.ts$/ })) !== undefined).toBe(true)
+  expect((await ui.find({ type: 'Text', text: /^f40\.ts$/ })) === undefined).toBe(true)
   expect((await ui.find({ type: 'Text', text: /และอีก 5 ไฟล์/ })) !== undefined).toBe(true)
   await ui.unmount()
 })
@@ -563,9 +572,83 @@ test('a file edited in any window shows up on the next poll, with no ref moving'
     },
   })
 
-  expect((await ui.find({ type: 'Text', text: /แก้ไข · a\.ts/ })) === undefined).toBe(true)
+  expect((await ui.find({ type: 'Text', text: /^a\.ts$/ })) === undefined).toBe(true)
   status = ' M a.ts\0'
   await clock.advance(5000)
-  expect((await ui.find({ type: 'Text', text: /แก้ไข · a\.ts/ })) !== undefined).toBe(true)
+  expect((await ui.find({ type: 'Text', text: /^a\.ts$/ })) !== undefined).toBe(true)
   await ui.unmount()
 })
+
+test('a path splits into its folder and its name', () => {
+  expect(splitPath('hooks/a/b.ts')).toEqual({ dir: 'hooks/a/', name: 'b.ts' })
+  expect(splitPath('b.ts')).toEqual({ dir: '', name: 'b.ts' })
+})
+
+test('tones say what a line asks of the person', () => {
+  const branch = { name: 'x', isRemote: false, upstream: 'origin/x', track: '', time: 0 }
+  const group = (total: number, error = '') => ({ files: [], total, isPartial: false, error })
+  const pending = (total: number, error = '') => ({ ...group(total, error), from: 'dev', to: 'main' })
+
+  expect(compareTone({ a: 'x', b: 'y', ahead: 0, behind: 0 })).toBe('good')
+  expect(compareTone({ a: 'x', b: 'y', ahead: 2, behind: 0 })).toBe('ahead')
+  expect(compareTone({ a: 'x', b: 'y', ahead: 0, behind: 2 })).toBe('attention')
+  expect(compareTone({ a: 'x', b: 'y', ahead: 1, behind: 2 })).toBe('attention')
+  expect(trackTone(branch)).toBe('good')
+  expect(trackTone({ ...branch, track: 'ahead 1' })).toBe('ahead')
+  expect(trackTone({ ...branch, track: 'behind 1' })).toBe('attention')
+  expect(trackTone({ ...branch, track: 'gone' })).toBe('attention')
+  expect(trackTone({ ...branch, upstream: '' })).toBe('ahead')
+  expect(changesTone({ uncommitted: group(0), pending: pending(0) })).toBe('good')
+  expect(changesTone({ uncommitted: group(0), pending: null })).toBe('good')
+  expect(changesTone({ uncommitted: group(0), pending: pending(3) })).toBe('ahead')
+  expect(changesTone({ uncommitted: group(1), pending: pending(3) })).toBe('attention')
+  expect(changesTone({ uncommitted: group(0), pending: pending(0, 'no base') })).toBe('attention')
+})
+
+for (const surface of ['desktop', 'terminal'] as const) {
+  test(`every zone draws on the ${surface}`, async ($, on) => {
+    on('process.run', (_, e) => {
+      const argv = e.argv as readonly string[]
+      const stdout = argv.includes('status')
+        ? ' M hooks/a.ts\0R  new.txt\0old.txt\0'
+        : argv.includes('diff')
+          ? 'M\0b.ts\0'
+          : argv.includes('log')
+            ? 'h1\x1f\x1fHEAD -> dev\x1fone\x1fa\x1f1000\x1e'
+            : argv.includes('rev-list')
+              ? '1\t0\n'
+              : argv.includes('symbolic-ref')
+                ? 'dev\n'
+                : argv.includes('for-each-ref')
+                  ? 'refs/heads/dev\tdev\t\t\t\t1000\nrefs/heads/main\tmain\t\t\t\t1000'
+                  : '/r\n'
+
+      return {
+        value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+      }
+    })
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    on('store.set', () => ({ value: undefined }))
+    await $.tool.call({ tool: 'mcp__git-graph__open', repo: '/r' } as never)
+
+    const ui = await $.ui.mount({
+      plugin: 'git-graph',
+      component: 'Pane',
+      requestId: 'git-graph',
+      surface,
+      props: {
+        title: 'Git Graph',
+        isFocused: false,
+        bodyColumns: 36,
+        placement: 'dock',
+        scroll: { offset: 0, bodyRows: 40 },
+        view: {},
+      },
+    })
+
+    for (const text of [/^Changes$/, /^มีไฟล์ค้าง$/, /^กิ่ง$/, /^ประวัติ commit$/, /^เดิม old\.txt$/]) {
+      expect((await ui.find({ type: 'Text', text })) !== undefined).toBe(true)
+    }
+    await ui.unmount()
+  })
+}

@@ -1,12 +1,16 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Changes, Compare, FileChange, FileGroup, GraphData } from '../types'
+import type { Changes, Compare, FileChange, FileGroup, FileKind, GraphData } from '../types'
+import type { Tone } from './graph'
 import {
   BRANCH_FORMAT,
+  KIND_LABEL,
   LOG_FORMAT,
   PAGE,
   buildSvg,
+  changesTone,
+  compareTone,
   describeCompare,
   describeFile,
   describeTrack,
@@ -15,7 +19,9 @@ import {
   parseLog,
   parseStatus,
   pickPending,
+  splitPath,
   stampOf,
+  trackTone,
 } from './graph'
 
 const PANE = 'git-graph'
@@ -29,6 +35,31 @@ const MAX_BRANCH_ROWS = 60
 const MAX_FILE_ROWS = 40
 const CELL_PX = 8
 const MIN_WIDTH = 160
+const KIND_COLUMN = 9
+
+// Theme keys, so the words follow light and dark. A tint is the hue at under 10%,
+// which reads as a surface on either theme; the terminal has no such thing.
+const TONES: Readonly<Record<Tone, { color: string; tint: string }>> = {
+  calm: { color: 'subtle', tint: '#8080800f' },
+  good: { color: 'success', tint: '#22c55e14' },
+  ahead: { color: 'suggestion', tint: '#3b82f614' },
+  attention: { color: 'warning', tint: '#f59e0b17' },
+}
+const KIND_COLOR: Readonly<Record<FileKind, string>> = {
+  modified: 'warning',
+  added: 'success',
+  untracked: 'success',
+  deleted: 'error',
+  renamed: 'suggestion',
+  copied: 'suggestion',
+  conflict: 'error',
+}
+const CHANGES_STATE: Readonly<Record<Tone, string>> = {
+  calm: '',
+  good: 'ครบแล้ว',
+  ahead: 'รอรวมกิ่ง',
+  attention: 'มีไฟล์ค้าง',
+}
 
 const repoAtom = atom({ plugin: 'git-graph', key: 'repo' } as const, '', { shape: 'repo-1' })
 const slotsAtom = atom({ plugin: 'git-graph', key: 'slots' } as const, [], { shape: 'slots-1' })
@@ -362,8 +393,13 @@ export const register: Register = on => {
     const picked = slots.filter(name => branches.some(one => one.name === name))
     const tracked = branches
       .filter(one => (picked.length > 0 ? picked.includes(one.name) : one.name === data?.head))
-      .map(describeTrack)
-      .filter(line => line !== '')
+      .map(one => ({ line: describeTrack(one), tone: trackTone(one) }))
+      .filter(one => one.line !== '')
+    const zone = (tone: Tone) => ({
+      borderStyle: 'round',
+      borderColor: TONES[tone].color,
+      ...(e.surface === 'terminal' ? {} : { backgroundColor: TONES[tone].tint }),
+    })
 
     const showBranches = (change: (current: string[]) => string[]) => {
       void (async () => {
@@ -427,22 +463,76 @@ export const register: Register = on => {
     }
     const { uncommitted, pending } = data.changes
     const countOf = (group: FileGroup) => (group.error !== '' ? '?' : `${group.total}${group.isPartial ? '+' : ''}`)
-    const fileGroup = (title: string, group: FileGroup) => (
-      <Box flexDirection="column">
-        <Text weight="semibold">
-          {title} ({countOf(group)} ไฟล์)
-        </Text>
-        {group.error !== '' && <Text color="error">{group.error}</Text>}
-        {group.error === '' && group.total === 0 && <Text dimColor>ไม่มี</Text>}
-        {group.files.map(file => (
-          <Text>{describeFile(file)}</Text>
-        ))}
-        {group.total > group.files.length && (
-          <Text dimColor>และอีก {group.total - group.files.length} ไฟล์</Text>
-        )}
-        {group.isPartial && <Text dimColor>รายการยาวเกินที่อ่านได้ จึงนับไม่ครบ</Text>}
-      </Box>
+    const fileRow = (file: FileChange) => {
+      const { dir, name } = splitPath(file.path)
+
+      return (
+        <Box flexDirection="row" gap="sm">
+          <Box width={KIND_COLUMN} flexShrink={0}>
+            <Text size="footnote" weight="medium" color={KIND_COLOR[file.kind]}>
+              {KIND_LABEL[file.kind]}
+            </Text>
+          </Box>
+          <Box flexDirection="column" flexShrink={1}>
+            <Text weight="medium">{name}</Text>
+            {dir !== '' && (
+              <Text size="footnote" dimColor>
+                {dir}
+              </Text>
+            )}
+            {file.from !== undefined && (
+              <Text size="footnote" dimColor>
+                เดิม {file.from}
+              </Text>
+            )}
+          </Box>
+        </Box>
+      )
+    }
+    // Color only where there is something to do: an empty list stays quiet.
+    const fileGroup = (title: string, group: FileGroup, tone: Tone) => {
+      const color = group.total > 0 ? TONES[tone].color : undefined
+
+      return (
+        <Box flexDirection="column" gap="xs">
+          <Box flexDirection="row" justifyContent="space-between" gap="sm">
+            <Box flexShrink={1}>
+              <Text weight="semibold" color={color}>
+                {title}
+              </Text>
+            </Box>
+            <Box flexShrink={0}>
+              <Text weight="semibold" color={color}>
+                {countOf(group)} ไฟล์
+              </Text>
+            </Box>
+          </Box>
+          {group.error !== '' && <Text color="error">{group.error}</Text>}
+          {group.error === '' && group.total === 0 && (
+            <Text size="footnote" dimColor>
+              ไม่มีไฟล์ค้าง
+            </Text>
+          )}
+          {group.files.map(fileRow)}
+          {group.total > group.files.length && (
+            <Text size="footnote" dimColor>
+              และอีก {group.total - group.files.length} ไฟล์
+            </Text>
+          )}
+          {group.isPartial && (
+            <Text size="footnote" dimColor>
+              รายการยาวเกินที่อ่านได้ จึงนับไม่ครบ
+            </Text>
+          )}
+        </Box>
+      )
+    }
+    const zoneTitle = (title: string) => (
+      <Text size="heading" weight="semibold">
+        {title}
+      </Text>
     )
+    const tone = changesTone(data.changes)
     const drawn =
       'Svg' in ui
         ? buildSvg(commits, {
@@ -455,74 +545,105 @@ export const register: Register = on => {
         : null
 
     return (
-      <Box flexDirection="column" gap={1}>
-        <Box flexDirection="row" justifyContent="space-between" alignItems="center">
-          <Text weight="semibold" size="heading">
-            {data.root.split('/').pop()} · {data.head === '' ? 'detached HEAD' : data.head}
-          </Text>
+      <Box flexDirection="column" gap="lg">
+        <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap="sm">
+          <Box flexDirection="column" flexShrink={1}>
+            <Text size="footnote" dimColor>
+              {data.root.split('/').pop()}
+            </Text>
+            <Text size="title" weight="bold">
+              {data.head === '' ? 'detached HEAD' : data.head}
+            </Text>
+          </Box>
           <Button key="refresh" label="รีเฟรช" onPress={() => void load($)} />
         </Box>
 
         {data.error !== '' && <Text color="error">{data.error}</Text>}
 
-        <Button
-          key="changes"
-          label={`Changes: ยังไม่ commit ${countOf(uncommitted)}${pending === null ? '' : ` · ${pending.from}→${pending.to} ${countOf(pending)}`} ${isChangesOpen ? '▴' : '▾'}`}
-          onPress={() => void update($, changesOpenAtom, open => !open)}
-        />
-        {isChangesOpen && (
-          <Box flexDirection="column" gap={1}>
-            {fileGroup(`ยังไม่ commit บน ${data.head === '' ? 'detached HEAD' : data.head}`, uncommitted)}
-            {pending === null ? (
-              <Text dimColor>ไม่มีกิ่ง dev กับ main ให้เทียบ</Text>
-            ) : (
-              fileGroup(`${pending.from} ยังไม่เข้า ${pending.to}`, pending)
-            )}
-          </Box>
-        )}
-
-        <Button
-          key="branches"
-          label={`กิ่งที่แสดง: ${summary} ${isMenuOpen ? '▴' : '▾'}`}
-          onPress={() => void update($, menuAtom, open => !open)}
-        />
-        {isMenuOpen && (
-          <Box flexDirection="column" gap={1}>
-            <Button
-              key="branch-all"
-              plain
-              label={`${picked.length === 0 ? '☑' : '☐'} ทุกกิ่ง`}
-              onPress={() => showBranches(() => [])}
-            />
-            {listed.map(name => (
-              <Button
-                key={`branch:${name}`}
-                plain
-                label={`${picked.includes(name) ? '☑' : '☐'} ${name}${name === data.head ? ' (กิ่งปัจจุบัน)' : ''}`}
-                onPress={() =>
-                  showBranches(current =>
-                    current.includes(name) ? current.filter(one => one !== name) : [...current, name],
-                  )
-                }
-              />
-            ))}
-            {listed.length < branches.length && (
-              <Text dimColor>
-                แสดง {listed.length} จาก {branches.length} กิ่ง เรียงจากล่าสุด
+        <Box flexDirection="column" gap="md" padding="md" {...zone(tone)}>
+          <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap="sm">
+            <Box flexDirection="column" flexShrink={1}>
+              {zoneTitle('Changes')}
+              <Text size="footnote" weight="medium" color={TONES[tone].color}>
+                {CHANGES_STATE[tone]}
               </Text>
-            )}
+            </Box>
+            <Button
+              key="changes"
+              label={isChangesOpen ? 'ซ่อน' : 'แสดง'}
+              onPress={() => void update($, changesOpenAtom, open => !open)}
+            />
           </Box>
-        )}
-
-        <Box flexDirection="column">
-          {tracked.slice(0, MAX_COMPARES).map(line => (
-            <Text>{line}</Text>
-          ))}
-          {data.compares.map(one => (
-            <Text>{describeCompare(one)}</Text>
-          ))}
+          {isChangesOpen ? (
+            <Box flexDirection="column" gap="md">
+              {fileGroup(`ยังไม่ commit บน ${data.head === '' ? 'detached HEAD' : data.head}`, uncommitted, 'attention')}
+              {pending === null ? (
+                <Text size="footnote" dimColor>
+                  ไม่มีกิ่ง dev กับ main ให้เทียบ
+                </Text>
+              ) : (
+                fileGroup(`${pending.from} ยังไม่เข้า ${pending.to}`, pending, 'ahead')
+              )}
+            </Box>
+          ) : (
+            <Text size="footnote">
+              ยังไม่ commit {countOf(uncommitted)}
+              {pending === null ? '' : ` · ${pending.from} ยังไม่เข้า ${pending.to} ${countOf(pending)}`}
+            </Text>
+          )}
         </Box>
 
+        <Box flexDirection="column" gap="md" padding="md" {...zone('calm')}>
+          <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap="sm">
+            <Box flexShrink={0}>{zoneTitle('กิ่ง')}</Box>
+            <Button
+              key="branches"
+              label={`แสดง: ${summary} ${isMenuOpen ? '▴' : '▾'}`}
+              onPress={() => void update($, menuAtom, open => !open)}
+            />
+          </Box>
+          {isMenuOpen && (
+            <Box flexDirection="column" gap={1}>
+              <Button
+                key="branch-all"
+                plain
+                label={`${picked.length === 0 ? '☑' : '☐'} ทุกกิ่ง`}
+                onPress={() => showBranches(() => [])}
+              />
+              {listed.map(name => (
+                <Button
+                  key={`branch:${name}`}
+                  plain
+                  label={`${picked.includes(name) ? '☑' : '☐'} ${name}${name === data.head ? ' (กิ่งปัจจุบัน)' : ''}`}
+                  onPress={() =>
+                    showBranches(current =>
+                      current.includes(name) ? current.filter(one => one !== name) : [...current, name],
+                    )
+                  }
+                />
+              ))}
+              {listed.length < branches.length && (
+                <Text size="footnote" dimColor>
+                  แสดง {listed.length} จาก {branches.length} กิ่ง เรียงจากล่าสุด
+                </Text>
+              )}
+            </Box>
+          )}
+          <Box flexDirection="column" gap="xs">
+            {tracked.slice(0, MAX_COMPARES).map(one => (
+              <Text size="footnote" weight="medium" color={TONES[one.tone].color}>
+                {one.line}
+              </Text>
+            ))}
+            {data.compares.map(one => (
+              <Text size="footnote" weight="medium" color={TONES[compareTone(one)].color}>
+                {describeCompare(one)}
+              </Text>
+            ))}
+          </Box>
+        </Box>
+
+        {zoneTitle('ประวัติ commit')}
         {commits.length === 0 && <Text dimColor>ยังไม่มี commit ให้แสดง</Text>}
 
         {drawn !== null && 'Svg' in ui && drawn.rowsDrawn > 0 && (
@@ -597,7 +718,11 @@ export const register: Register = on => {
         )}
         {detail !== null && <Code source={detail.text} />}
 
-        {repoControls}
+        {repoControls && (
+          <Box flexDirection="column" padding="md" {...(e.surface === 'terminal' ? {} : { backgroundColor: TONES.calm.tint })}>
+            {repoControls}
+          </Box>
+        )}
       </Box>
     )
   })

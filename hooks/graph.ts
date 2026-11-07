@@ -1,4 +1,4 @@
-import type { Branch, Commit, Compare, FileChange, FileKind } from '../types'
+import type { Branch, Changes, Commit, Compare, FileChange, FileKind } from '../types'
 
 // Pure code only: parsing git's output, laying out lanes, drawing the SVG.
 // Nothing here runs a command, so it can be tested with plain strings.
@@ -160,7 +160,7 @@ export function pickPending(
   return to === '' || from === '' || from === to ? null : { from, to }
 }
 
-const KIND_LABEL: Readonly<Record<FileKind, string>> = {
+export const KIND_LABEL: Readonly<Record<FileKind, string>> = {
   modified: 'แก้ไข',
   added: 'เพิ่ม',
   deleted: 'ลบ',
@@ -172,6 +172,35 @@ const KIND_LABEL: Readonly<Record<FileKind, string>> = {
 
 export function describeFile({ kind, path, from }: FileChange): string {
   return `${KIND_LABEL[kind]} · ${from === undefined ? path : `${from} → ${path}`}`
+}
+
+export function splitPath(path: string): { dir: string; name: string } {
+  const cut = path.lastIndexOf('/') + 1
+
+  return { dir: path.slice(0, cut), name: path.slice(cut) }
+}
+
+// What a line or a zone means, so the pane can color it: good needs nothing,
+// ahead is work on its way, attention is work waiting on the person.
+export type Tone = 'calm' | 'good' | 'ahead' | 'attention'
+
+export function compareTone({ ahead, behind }: Compare): Tone {
+  if (ahead === 0 && behind === 0) return 'good'
+
+  return behind === 0 ? 'ahead' : 'attention'
+}
+
+export function trackTone(branch: Branch): Tone {
+  if (branch.upstream === '') return 'ahead'
+  if (branch.track === 'gone' || branch.track.includes('behind')) return 'attention'
+
+  return branch.track === '' ? 'good' : 'ahead'
+}
+
+export function changesTone({ uncommitted, pending }: Changes): Tone {
+  if (uncommitted.error !== '' || pending?.error || uncommitted.total > 0) return 'attention'
+
+  return (pending?.total ?? 0) > 0 ? 'ahead' : 'good'
 }
 
 // A short stamp of a long text, so the poll keeps no copy of the whole file list.
