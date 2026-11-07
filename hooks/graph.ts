@@ -406,7 +406,6 @@ const FONT = 17
 const CHIP_FONT = 15
 const CHIP_CHAR = CHIP_FONT * 0.56
 const CHIP_HEIGHT = 26
-const CHIP_LINE = 32
 const CHIP_GAP = 5
 const CHIP_PAD = 6
 const ICON = 16
@@ -414,9 +413,8 @@ const ICON_ROOM = ICON + 3
 const MAX_CHIPS = 12
 const MAX_LABEL = 26
 const MAX_LANES = 12
-// Labels share the row while the message keeps this much; past that they get a line
-// of their own under it, so every label shows at any width.
-const MIN_SUBJECT = 200
+const MIN_LABEL = 4
+const MORE_ROOM = 28
 const MAX_SUBJECT = 400
 // Pointing at a row slides a message too long for it: the app's frame cannot scroll
 // sideways (it hides overflow and removes foreignObject), but it does run CSS hover.
@@ -525,6 +523,28 @@ export function syncOf(branch: Branch | undefined): string {
   return `${behind}↓ ${ahead}↑`
 }
 
+// Labels come first on a row: the message gets what they leave. Names shorten until
+// the labels fit beside the lanes, and only then does the last of them become a count.
+function fitChips(all: readonly Chip[], usable: number) {
+  const measure = (chips: readonly Chip[], room: number) =>
+    chips.map(chip => ({ chip, ...chipWidthOf(chip, room) }))
+  const total = (chips: readonly { width: number }[]) =>
+    chips.reduce((sum, one) => sum + one.width + CHIP_GAP, 0)
+
+  for (let room = MAX_LABEL; room >= MIN_LABEL; room--) {
+    const chips = measure(all, room)
+
+    if (total(chips) <= usable) return chips
+  }
+  for (let count = all.length - 1; count > 0; count--) {
+    const chips = measure(all.slice(0, count), MIN_LABEL)
+
+    if (total(chips) + MORE_ROOM <= usable) return chips
+  }
+
+  return measure(all.slice(0, 1), MIN_LABEL)
+}
+
 function drawRows(
   rows: readonly Row[],
   { width, now, remoteNames, textX, above, outgoing }: {
@@ -538,66 +558,34 @@ function drawRows(
 ): string {
   const edgeRight = width - 6
   const usable = Math.max(40, edgeRight - textX)
-  // A label cut only where it could not fit a line of its own, clear of the lanes.
-  const labelRoom = Math.max(4, Math.min(MAX_LABEL, Math.floor((usable - CHIP_PAD * 2 - ICON_ROOM * 2) / CHIP_CHAR)))
   const laneX = (lane: number) => LANE / 2 + 6 + lane * LANE
-  // Each row is as tall as its labels need, so each row's place adds up from the top.
-  const plans = rows.map(row => {
-    const all = chipsOf(row.commit.refs, remoteNames)
-    const chips = all.slice(0, MAX_CHIPS).map(chip => ({ chip, ...chipWidthOf(chip, labelRoom) }))
-    const inlineWidth = chips.reduce((sum, one) => sum + one.width + CHIP_GAP, 0)
-    const isInline = chips.length === 0 || inlineWidth <= usable - MIN_SUBJECT
-    const placed: { index: number; x: number; line: number }[] = []
-    let x = textX
-    let line = 0
-
-    if (!isInline) {
-      chips.forEach((one, index) => {
-        if (x > textX && x + one.width > edgeRight) {
-          x = textX
-          line += 1
-        }
-        placed.push({ index, x, line })
-        x += one.width + CHIP_GAP
-      })
-    }
-
-    return { all, chips, isInline, placed, height: ROW + (isInline ? 0 : (line + 1) * CHIP_LINE) }
-  })
-  const ys: number[] = []
-
-  plans.reduce((top, plan, index) => {
-    ys[index] = top + ROW / 2
-
-    return top + plan.height
-  }, 0)
-  const height = plans.reduce((sum, plan) => sum + plan.height, 0) + ROW / 2
+  const rowY = (index: number) => ROW / 2 + index * ROW
+  const height = rows.length * ROW + ROW / 2
   const lines: string[] = []
   const dots: string[] = []
   const texts: string[] = []
-  // Edges run down to the next row; the drawing's own edges cut what leaves the page.
-  const drawEdges = (row: Row, y: number, y2: number) => {
+  // Edges run a full row down; the drawing's own edges cut what leaves the page.
+  const drawEdges = (row: Row, y: number) => {
     for (const edge of row.edges) {
       const x1 = laneX(edge.from)
       const x2 = laneX(edge.to)
+      const y2 = y + ROW
       const d =
         x1 === x2
           ? `M${x1} ${y}V${y2}`
-          : `M${x1} ${y}C${x1} ${y + (y2 - y) * 0.55} ${x2} ${y2 - (y2 - y) * 0.55} ${x2} ${y2}`
+          : `M${x1} ${y}C${x1} ${y + ROW * 0.55} ${x2} ${y2 - ROW * 0.55} ${x2} ${y2}`
 
       lines.push(`<path d="${d}" stroke="${outgoing.has(row.commit.hash) ? OUTGOING : paint(edge.color)}"/>`)
     }
   }
 
   // What comes down from the page above.
-  if (above !== undefined) drawEdges(above, -ROW / 2, ROW / 2)
+  if (above !== undefined) drawEdges(above, rowY(-1))
 
   rows.forEach((row, index) => {
-    const y = ys[index] ?? 0
-    const plan = plans[index]
+    const y = rowY(index)
 
-    if (plan === undefined) return
-    drawEdges(row, y, ys[index + 1] ?? y + ROW)
+    drawEdges(row, y)
 
     const isHead = row.commit.refs.some(ref => ref === 'HEAD' || ref.startsWith('HEAD -> '))
     const isMerge = row.commit.parents.length > 1
@@ -609,35 +597,27 @@ function drawRows(
         : `<circle class="dot" cx="${laneX(row.lane)}" cy="${y}" r="${isMerge ? 4.5 : 6}" fill="${outgoing.has(row.commit.hash) ? OUTGOING : paint(row.color)}" stroke-width="2"/>`,
     )
 
-    const extra = plan.all.length - plan.chips.length
+    const all = chipsOf(row.commit.refs, remoteNames)
+    const shown = fitChips(all, usable)
+    const extra = all.length - shown.length
     let right = edgeRight
     let chipMarks = ''
 
-    if (plan.isInline) {
-      for (const one of [...plan.chips].reverse()) {
-        right -= one.width
-        chipMarks += drawChip(one.chip, one.label, one.width, right, y)
-        right -= CHIP_GAP
-      }
-    } else {
-      for (const spot of plan.placed) {
-        const one = plan.chips[spot.index]
-
-        if (one !== undefined) {
-          chipMarks += drawChip(one.chip, one.label, one.width, spot.x, y + ROW / 2 + CHIP_LINE / 2 + spot.line * CHIP_LINE - 3)
-        }
-      }
-      if (extra > 0) {
-        chipMarks += `<text class="m d" x="${textX}" y="${y + plan.height - ROW / 2 - 4}">+${extra}</text>`
-      }
+    if (extra > 0) {
+      right -= MORE_ROOM
+      chipMarks += `<text class="m d" x="${right + 3}" y="${y + 5}">+${extra}</text>`
+    }
+    for (const one of [...shown].reverse()) {
+      right -= one.width
+      chipMarks += drawChip(one.chip, one.label, one.width, right, y)
+      right -= CHIP_GAP
     }
 
     const subject = cut(row.commit.subject, MAX_SUBJECT)
     const age = ageOf(row.commit.time, now)
     const after = `  ${age} · ${cut(row.commit.author, 30)}`
-    const hasInlineChips = plan.isInline && plan.chips.length > 0
     // Measured by estimate, so a slide goes a little past the end rather than short.
-    const room = (hasInlineChips ? right - 8 : edgeRight) - textX
+    const room = (all.length > 0 ? right - 8 : edgeRight) - textX
     const textWidth = (Array.from(subject).length + Array.from(after).length) * FONT * SLIDE_CHAR
     const slide = Math.ceil(textWidth - room + 16)
     const motion =
@@ -645,16 +625,16 @@ function drawRows(
         ? ` style="--x:-${slide}px;--d:${Math.min(20, Math.max(1, slide / SLIDE_SPEED)).toFixed(1)}s"`
         : ''
     const tooltip = escapeXml(
-      `${row.commit.hash.slice(0, 8)} · ${row.commit.author} · ${age}\n${subject}${plan.all.length > 0 ? `\n${plan.all.map(chip => chip.text).join(', ')}` : ''}`,
+      `${row.commit.hash.slice(0, 8)} · ${row.commit.author} · ${age}\n${subject}${all.length > 0 ? `\n${all.map(chip => chip.text).join(', ')}` : ''}`,
     )
     // The label's backing hides the message as it passes beneath.
-    const backing = hasInlineChips
+    const backing = all.length > 0
       ? `<rect class="bg" x="${right}" y="${y - ROW / 2}" width="${width - right}" height="${ROW}"/>`
       : ''
 
     texts.push(
       `<g class="r"><title>${tooltip}</title>` +
-        `<rect class="h" x="${textX - 4}" y="${y - ROW / 2}" width="${width - textX + 4}" height="${plan.height}"/>` +
+        `<rect class="h" x="${textX - 4}" y="${y - ROW / 2}" width="${width - textX + 4}" height="${ROW}"/>` +
         `<g clip-path="url(#k)"><text class="t s${isHead ? ' b' : ''}" x="${textX}" y="${y + 6}"${motion}>${escapeXml(subject)}<tspan class="d">${escapeXml(after)}</tspan></text></g>` +
         backing +
         chipMarks +

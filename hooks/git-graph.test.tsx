@@ -248,7 +248,7 @@ test('a message that fits does not slide', () => {
   expect(source.includes('--x:-')).toBe(false)
 })
 
-test('a narrow pane shows every label on a line of its own, and the row grows for it', () => {
+test('a narrow pane keeps every label on the commit\'s own row, ahead of the message', () => {
   const remotes = new Set(['origin/dev', 'origin/main'])
   const refs = ['HEAD -> dev', 'origin/dev', 'origin/HEAD', 'main', 'origin/main', 'tag: v1']
   const commits = [commit('c', ['b'], refs), commit('b', [])]
@@ -260,21 +260,36 @@ test('a narrow pane shows every label on a line of its own, and the row grows fo
     expect(wide.source.includes(label)).toBe(true)
   }
   expect(narrow.source.includes('origin/HEAD</text>')).toBe(false)
-  expect(narrow.height > 2 * 38 + 19).toBe(true)
+  expect(narrow.height).toBe(2 * 38 + 19)
   expect(wide.height).toBe(2 * 38 + 19)
   expect(narrow.source.includes('>+')).toBe(false)
+
+  const ys = [...narrow.source.matchAll(/<rect class="c-\w+" x="[\d.]+" y="([\d.-]+)"/g)].map(match => match[1])
+
+  expect(new Set(ys).size).toBe(1)
 })
 
-test('labels wrap to a further line rather than leave the pane', () => {
-  const refs = ['HEAD -> dev', 'feature/one', 'feature/two', 'feature/three']
-  const { source, height } = buildSvg([commit('c', [], refs)], { width: 240, now: 2000, remoteNames: new Set() })
-  const rights = [...source.matchAll(/<rect class="c-\w+" x="([\d.]+)" y="[\d.-]+" width="([\d.]+)"/g)].map(
-    match => Number(match[1]) + Number(match[2]),
-  )
+test('long names shorten to fit beside the lanes, and only then does a label become a count', () => {
+  const rights = (source: string) =>
+    [...source.matchAll(/<rect class="c-\w+" x="([\d.]+)" y="[\d.-]+" width="([\d.]+)"/g)].map(match => ({
+      left: Number(match[1]),
+      right: Number(match[1]) + Number(match[2]),
+    }))
+  const named = ['HEAD -> feature/a-very-long-branch-name', 'feature/another-long-name']
+  const shortened = buildSvg([commit('c', [], named)], { width: 300, now: 2000, remoteNames: new Set() })
 
-  expect(rights.length).toBe(4)
-  for (const right of rights) expect(right <= 240).toBe(true)
-  expect(height > 38 + 32 + 19).toBe(true)
+  expect(rights(shortened.source).length).toBe(2)
+  expect(shortened.source.includes('…')).toBe(true)
+  for (const chip of rights(shortened.source)) {
+    expect(chip.left >= 36).toBe(true)
+    expect(chip.right <= 300).toBe(true)
+  }
+
+  const many = ['HEAD -> dev', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7']
+  const counted = buildSvg([commit('c', [], many)], { width: 240, now: 2000, remoteNames: new Set() })
+
+  expect(/>\+\d+<\/text>/.test(counted.source)).toBe(true)
+  expect(counted.source.includes('>dev<') || counted.source.includes('>dev…<')).toBe(true)
 })
 
 test('the current branch reads apart from main and a remote, and icons say where each lives', () => {
