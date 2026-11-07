@@ -672,13 +672,13 @@ test('with one side empty, both boxes show and the empty one says so', async ($,
   await ui.unmount()
 })
 
-test('the graph draws in the earth palette, with no blue or pink left', () => {
+test('the graph draws in soft colors, with neither the strong set nor the earth set left', () => {
   const { source } = buildSvg([commit('c', ['b'], ['HEAD -> dev', 'tag: v1', 'origin/dev']), commit('b', [])], {
     width: 600,
     now: 2000,
     remoteNames: new Set(['origin/dev']),
   })
 
-  for (const old of ['#2f81f7', '#db61a2', '#a371f7', '#ddf4ff', '#10304f']) expect(source.includes(old)).toBe(false)
-  expect(source.includes('#6E4F3A')).toBe(true)
+  for (const old of ['#2f81f7', '#db61a2', '#a371f7', '#6E4F3A', '#A5532A', '#EFE6D8']) expect(source.includes(old)).toBe(false)
+  expect(source.includes('#6BA3E8')).toBe(true)
 })

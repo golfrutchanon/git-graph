@@ -37,23 +37,24 @@ const CELL_PX = 8
 const MIN_WIDTH = 160
 const KIND_COLUMN = 7
 
-// One earth palette for the whole pane. The words are dark enough to read on the
-// light theme at 5:1 or better; a hook cannot ask which theme is on, so `key` keeps
-// the terminal on theme colors, and the dark desktop theme reads these words low.
+// Words take theme keys, so they read on light and dark alike. Edges and surfaces
+// are the same hues at low strength, which sit quietly on either theme.
 type Paint = Tone | 'danger'
-const TONES: Readonly<Record<Paint, { color: string; line: string; tint: string; key: string }>> = {
-  calm: { color: '#6B6053', line: '#8C7F7080', tint: '#8C7F7017', key: 'subtle' },
-  good: { color: '#566334', line: '#7D8C4F99', tint: '#7D8C4F24', key: 'success' },
-  ahead: { color: '#47636E', line: '#6B8A9699', tint: '#6B8A9624', key: 'suggestion' },
-  attention: { color: '#9C4F24', line: '#C4703A99', tint: '#C4703A24', key: 'warning' },
-  danger: { color: '#8F3A2B', line: '#8F3A2B99', tint: '#8F3A2B1F', key: 'error' },
+const TONES: Readonly<Record<Paint, { key: string; line: string; tint: string }>> = {
+  calm: { key: 'subtle', line: '#80808040', tint: '#8080800f' },
+  good: { key: 'success', line: '#22c55e59', tint: '#22c55e0f' },
+  ahead: { key: 'suggestion', line: '#3b82f64d', tint: '#3b82f60d' },
+  attention: { key: 'warning', line: '#f59e0b66', tint: '#f59e0b12' },
+  danger: { key: 'error', line: '#ef444459', tint: '#ef44440f' },
 }
-const KIND_PAINT: Readonly<Record<Exclude<FileKind, 'modified'>, Paint>> = {
+// The colors VS Code gives the same git states, whichever box the file sits in.
+const KIND_PAINT: Readonly<Record<FileKind, Paint>> = {
+  modified: 'attention',
   added: 'good',
   untracked: 'good',
+  renamed: 'good',
+  copied: 'good',
   deleted: 'danger',
-  renamed: 'ahead',
-  copied: 'ahead',
   conflict: 'danger',
 }
 const CHANGES_STATE: Readonly<Record<Tone, string>> = {
@@ -398,7 +399,7 @@ export const register: Register = on => {
       .map(one => ({ line: describeTrack(one), tone: trackTone(one) }))
       .filter(one => one.line !== '')
     const isTerminal = e.surface === 'terminal'
-    const colorOf = (paint: Paint) => (isTerminal ? TONES[paint].key : TONES[paint].color)
+    const colorOf = (paint: Paint) => TONES[paint].key
     const zone = (paint: Paint) => ({
       borderStyle: 'round',
       borderColor: isTerminal ? TONES[paint].key : TONES[paint].line,
@@ -467,13 +468,13 @@ export const register: Register = on => {
     }
     const { uncommitted, pending } = data.changes
     const countOf = (group: FileGroup) => (group.error !== '' ? '?' : `${group.total}${group.isPartial ? '+' : ''}`)
-    const fileRow = (file: FileChange, tone: Tone) => {
+    const fileRow = (file: FileChange) => {
       const { dir, name } = splitPath(file.path)
 
       return (
         <Box flexDirection="row" gap="sm">
           <Box width={KIND_COLUMN} flexShrink={0}>
-            <Text size="footnote" weight="medium" color={colorOf(file.kind === 'modified' ? tone : KIND_PAINT[file.kind])}>
+            <Text size="footnote" weight="medium" color={colorOf(KIND_PAINT[file.kind])}>
               {KIND_LABEL[file.kind]}
             </Text>
           </Box>
@@ -518,7 +519,7 @@ export const register: Register = on => {
               ไม่มีไฟล์ค้าง
             </Text>
           )}
-          {group.files.map(file => fileRow(file, tone))}
+          {group.files.map(fileRow)}
           {group.total > group.files.length && (
             <Text size="footnote" dimColor>
               และอีก {group.total - group.files.length} ไฟล์
@@ -569,7 +570,7 @@ export const register: Register = on => {
           <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap="sm">
             <Box flexDirection="column" flexShrink={1}>
               {zoneTitle('Changes')}
-              <Text size="footnote" weight="medium" color={colorOf(tone === 'good' ? 'good' : 'calm')}>
+              <Text size="footnote" weight="medium" color={tone === 'good' ? colorOf('good') : undefined} dimColor={tone !== 'good'}>
                 {CHANGES_STATE[tone]}
               </Text>
             </Box>
