@@ -41,11 +41,11 @@ const KIND_COLUMN = 7
 // are the same hues at low strength, which sit quietly on either theme.
 type Paint = Tone | 'danger'
 const TONES: Readonly<Record<Paint, { key: string; line: string; tint: string }>> = {
-  calm: { key: 'subtle', line: '#80808040', tint: '#8080800f' },
-  good: { key: 'success', line: '#22c55e59', tint: '#22c55e0f' },
-  ahead: { key: 'suggestion', line: '#3b82f64d', tint: '#3b82f60d' },
-  attention: { key: 'warning', line: '#f59e0b66', tint: '#f59e0b12' },
-  danger: { key: 'error', line: '#ef444459', tint: '#ef44440f' },
+  calm: { key: 'subtle', line: '#80808073', tint: '#8080801a' },
+  good: { key: 'success', line: '#22c55e8c', tint: '#22c55e1f' },
+  ahead: { key: 'suggestion', line: '#3b82f680', tint: '#3b82f61a' },
+  attention: { key: 'warning', line: '#f59e0b99', tint: '#f59e0b24' },
+  danger: { key: 'error', line: '#ef44448c', tint: '#ef44441f' },
 }
 // The colors VS Code gives the same git states, whichever box the file sits in.
 const KIND_PAINT: Readonly<Record<FileKind, Paint>> = {
@@ -474,12 +474,12 @@ export const register: Register = on => {
       return (
         <Box flexDirection="row" gap="sm">
           <Box width={KIND_COLUMN} flexShrink={0}>
-            <Text size="footnote" weight="medium" color={colorOf(KIND_PAINT[file.kind])}>
+            <Text weight="semibold" color={colorOf(KIND_PAINT[file.kind])}>
               {KIND_LABEL[file.kind]}
             </Text>
           </Box>
           <Box flexDirection="column" flexShrink={1}>
-            <Text weight="medium">{name}</Text>
+            <Text weight="semibold">{name}</Text>
             {dir !== '' && (
               <Text size="footnote" dimColor>
                 {dir}
@@ -514,11 +514,7 @@ export const register: Register = on => {
             </Box>
           </Box>
           {group.error !== '' && <Text color={colorOf('danger')}>{group.error}</Text>}
-          {group.error === '' && group.total === 0 && (
-            <Text size="footnote" dimColor>
-              ไม่มีไฟล์ค้าง
-            </Text>
-          )}
+          {group.error === '' && group.total === 0 && <Text>ไม่มีไฟล์ค้าง</Text>}
           {group.files.map(fileRow)}
           {group.total > group.files.length && (
             <Text size="footnote" dimColor>
@@ -570,7 +566,7 @@ export const register: Register = on => {
           <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap="sm">
             <Box flexDirection="column" flexShrink={1}>
               {zoneTitle('Changes')}
-              <Text size="footnote" weight="medium" color={tone === 'good' ? colorOf('good') : undefined} dimColor={tone !== 'good'}>
+              <Text weight="semibold" color={tone === 'good' ? colorOf('good') : undefined}>
                 {CHANGES_STATE[tone]}
               </Text>
             </Box>
@@ -639,19 +635,24 @@ export const register: Register = on => {
           )}
           <Box flexDirection="column" gap="xs">
             {tracked.slice(0, MAX_COMPARES).map(one => (
-              <Text size="footnote" weight="medium" color={colorOf(one.tone)}>
+              <Text weight="semibold" color={colorOf(one.tone)}>
                 {one.line}
               </Text>
             ))}
             {data.compares.map(one => (
-              <Text size="footnote" weight="medium" color={colorOf(compareTone(one))}>
+              <Text weight="semibold" color={colorOf(compareTone(one))}>
                 {describeCompare(one)}
               </Text>
             ))}
           </Box>
         </Box>
 
-        {zoneTitle('ประวัติ commit')}
+        <Box flexDirection="column" gap="xs">
+          {zoneTitle('ประวัติ commit')}
+          <Text size="footnote" dimColor>
+            รูปกิ่ง = บนเครื่อง · รูปเมฆ = บน remote เช่น GitHub ตาม fetch หรือ push ล่าสุด
+          </Text>
+        </Box>
         {commits.length === 0 && <Text dimColor>ยังไม่มี commit ให้แสดง</Text>}
 
         {drawn !== null && 'Svg' in ui && drawn.rowsDrawn > 0 && (

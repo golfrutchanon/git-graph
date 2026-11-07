@@ -96,7 +96,7 @@ test('branches parse: origin/HEAD is dropped, locals come first', () => {
   const branches = parseBranches(stdout)
 
   expect(branches.map(one => one.name)).toEqual(['dev', 'old', 'origin/main'])
-  expect(describeTrack(branches[0]!)).toBe('dev: รอ push 2 · รอ pull 1 commit')
+  expect(describeTrack(branches[0]!)).toBe('dev บนเครื่อง: รอ push 2 · รอ pull 1 commit')
   expect(describeTrack(branches[1]!)).toBe('old ยังไม่มีบน remote')
 })
 
@@ -113,9 +113,9 @@ test('a local branch and its remote copy read as one chip, head first', () => {
   const chips = chipsOf(['origin/x', 'HEAD -> dev', 'origin/dev', 'tag: v1'], new Set(['origin/dev', 'origin/x']))
 
   expect(chips).toEqual([
-    { text: 'dev ☁', kind: 'head' },
-    { text: 'origin/x', kind: 'remote' },
-    { text: 'v1', kind: 'tag' },
+    { text: 'dev', kind: 'head', where: 'both' },
+    { text: 'origin/x', kind: 'remote', where: 'remote' },
+    { text: 'v1', kind: 'tag', where: 'none' },
   ])
 })
 
@@ -246,11 +246,68 @@ test('a message that fits does not slide', () => {
   expect(source.includes('--x:-')).toBe(false)
 })
 
-test('a narrow pane keeps one label and counts the rest', () => {
-  const commits = [commit('c', [], ['HEAD -> dev', 'x', 'y'])]
-  const { source } = buildSvg(commits, { width: 400, now: 2000, remoteNames: new Set() })
+test('a narrow pane shows every label on a line of its own, and the row grows for it', () => {
+  const remotes = new Set(['origin/dev', 'origin/main'])
+  const refs = ['HEAD -> dev', 'origin/dev', 'origin/HEAD', 'main', 'origin/main', 'tag: v1']
+  const commits = [commit('c', ['b'], refs), commit('b', [])]
+  const narrow = buildSvg(commits, { width: 300, now: 2000, remoteNames: remotes })
+  const wide = buildSvg(commits, { width: 1000, now: 2000, remoteNames: remotes })
 
-  expect(source.includes('>+2</text>')).toBe(true)
+  for (const label of ['>dev<', '>main<', '>v1<']) {
+    expect(narrow.source.includes(label)).toBe(true)
+    expect(wide.source.includes(label)).toBe(true)
+  }
+  expect(narrow.source.includes('origin/HEAD</text>')).toBe(false)
+  expect(narrow.height > 2 * 38 + 19).toBe(true)
+  expect(wide.height).toBe(2 * 38 + 19)
+  expect(narrow.source.includes('>+')).toBe(false)
+})
+
+test('labels wrap to a further line rather than leave the pane', () => {
+  const refs = ['HEAD -> dev', 'feature/one', 'feature/two', 'feature/three']
+  const { source, height } = buildSvg([commit('c', [], refs)], { width: 240, now: 2000, remoteNames: new Set() })
+  const rights = [...source.matchAll(/<rect class="c-\w+" x="([\d.]+)" y="[\d.-]+" width="([\d.]+)"/g)].map(
+    match => Number(match[1]) + Number(match[2]),
+  )
+
+  expect(rights.length).toBe(4)
+  for (const right of rights) expect(right <= 240).toBe(true)
+  expect(height > 38 + 32 + 19).toBe(true)
+})
+
+test('dev, main and a remote each have a color, and the icons say where a branch lives', () => {
+  const remotes = new Set(['origin/dev', 'origin/old'])
+  const chips = chipsOf(['HEAD -> dev', 'origin/dev', 'main', 'side', 'origin/old'], remotes)
+
+  expect(chips).toEqual([
+    { text: 'dev', kind: 'head', where: 'both' },
+    { text: 'main', kind: 'base', where: 'local' },
+    { text: 'side', kind: 'local', where: 'local' },
+    { text: 'origin/old', kind: 'remote', where: 'remote' },
+  ])
+  expect(chipsOf(['HEAD -> main'], new Set())[0]?.kind).toBe('head')
+
+  const { source } = buildSvg([commit('c', [], ['HEAD -> dev', 'origin/dev'])], {
+    width: 800,
+    now: 2000,
+    remoteNames: remotes,
+  })
+
+  expect(source.includes('circle cx="12" cy="4"')).toBe(true)
+  expect(source.includes('M4.6 13a3.4')).toBe(true)
+  expect(source.includes('☁')).toBe(false)
+})
+
+test('a branch and its remote copy on different commits read as two chips', () => {
+  const remotes = new Set(['origin/dev'])
+  const { source } = buildSvg([commit('c', ['b'], ['HEAD -> dev']), commit('b', [], ['origin/dev'])], {
+    width: 800,
+    now: 2000,
+    remoteNames: remotes,
+  })
+
+  expect(source.includes('>dev<')).toBe(true)
+  expect(source.includes('>origin/dev<')).toBe(true)
 })
 
 test('a full page of 100 long commits fits what a pane can take', () => {

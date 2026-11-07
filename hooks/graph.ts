@@ -69,7 +69,7 @@ export function describeTrack(branch: Branch): string {
   const behind = /behind (\d+)/.exec(branch.track)?.[1]
 
   if (ahead === undefined && behind === undefined) {
-    return `${branch.name} ตรงกับ ${branch.upstream}`
+    return `${branch.name} บนเครื่อง ตรงกับ ${branch.upstream}`
   }
 
   const parts: string[] = []
@@ -77,7 +77,7 @@ export function describeTrack(branch: Branch): string {
   if (ahead !== undefined) parts.push(`รอ push ${ahead}`)
   if (behind !== undefined) parts.push(`รอ pull ${behind}`)
 
-  return `${branch.name}: ${parts.join(' · ')} commit`
+  return `${branch.name} บนเครื่อง: ${parts.join(' · ')} commit`
 }
 
 const KIND_BY_LETTER: Readonly<Record<string, FileKind>> = {
@@ -305,29 +305,38 @@ export function layoutGraph(commits: readonly Commit[]): { rows: Row[]; lanes: n
   return { rows, lanes: widest }
 }
 
-export type Chip = { text: string; kind: 'head' | 'local' | 'remote' | 'tag' }
+// Where a branch name lives: on this machine, on the remote as last fetched, or both
+// at this very commit. A tag or a detached HEAD is neither.
+export type Chip = {
+  text: string
+  kind: 'head' | 'base' | 'local' | 'remote' | 'tag'
+  where: 'local' | 'remote' | 'both' | 'none'
+}
 
-// `HEAD -> dev`, `origin/dev`, `tag: v1`: a local branch and its remote copy on
-// the same commit become one chip.
+// `HEAD -> dev`, `origin/dev`, `tag: v1`: a local branch and its remote copy on the
+// same commit become one chip that says so. `origin/HEAD` only points at another
+// branch, so it is no chip of its own.
 export function chipsOf(refs: readonly string[], remoteNames: ReadonlySet<string>): Chip[] {
   const chips: Chip[] = []
   const locals = new Set<string>()
+  const isPointer = (ref: string) => ref !== 'HEAD' && ref.endsWith('/HEAD')
   let head = ''
 
   for (const ref of refs) {
     if (ref.startsWith('HEAD -> ')) {
       head = ref.slice('HEAD -> '.length)
       locals.add(head)
-    } else if (!ref.startsWith('tag: ') && ref !== 'HEAD' && !remoteNames.has(ref)) {
+    } else if (!ref.startsWith('tag: ') && ref !== 'HEAD' && !isPointer(ref) && !remoteNames.has(ref)) {
       locals.add(ref)
     }
   }
 
   for (const ref of refs) {
+    if (isPointer(ref)) continue
     if (ref === 'HEAD') {
-      chips.push({ text: 'HEAD', kind: 'head' })
+      chips.push({ text: 'HEAD', kind: 'head', where: 'none' })
     } else if (ref.startsWith('tag: ')) {
-      chips.push({ text: ref.slice('tag: '.length), kind: 'tag' })
+      chips.push({ text: ref.slice('tag: '.length), kind: 'tag', where: 'none' })
     } else if (ref.startsWith('HEAD -> ') || locals.has(ref)) {
       const name = ref.startsWith('HEAD -> ') ? head : ref
       const synced = refs.some(
@@ -335,13 +344,14 @@ export function chipsOf(refs: readonly string[], remoteNames: ReadonlySet<string
       )
 
       chips.push({
-        text: synced ? `${name} ☁` : name,
-        kind: name === head ? 'head' : 'local',
+        text: name,
+        kind: name === head ? 'head' : name === 'main' || name === 'master' ? 'base' : 'local',
+        where: synced ? 'both' : 'local',
       })
     } else {
       const local = [...locals].some(name => ref.endsWith(`/${name}`))
 
-      if (!local) chips.push({ text: ref, kind: 'remote' })
+      if (!local) chips.push({ text: ref, kind: 'remote', where: 'remote' })
     }
   }
 
@@ -349,7 +359,7 @@ export function chipsOf(refs: readonly string[], remoteNames: ReadonlySet<string
   return chips.sort((x, y) => rank(x) - rank(y))
 }
 
-const rank = (chip: Chip) => ['head', 'local', 'remote', 'tag'].indexOf(chip.kind)
+const rank = (chip: Chip) => ['head', 'base', 'local', 'remote', 'tag'].indexOf(chip.kind)
 
 export function ageOf(time: number, now: number): string {
   const minutes = Math.max(0, Math.floor((now - time) / 60))
@@ -392,9 +402,18 @@ const LANE = 20
 const FONT = 17
 const CHIP_FONT = 15
 const CHIP_CHAR = CHIP_FONT * 0.62
+const CHIP_HEIGHT = 26
+const CHIP_LINE = 32
+const CHIP_GAP = 5
+const CHIP_PAD = 6
+const ICON = 16
+const ICON_ROOM = ICON + 3
+const MAX_CHIPS = 12
+const MAX_LABEL = 26
 const MAX_LANES = 12
-// A narrow pane keeps one label on a row, so the message still has room.
-const NARROW_BELOW = 620
+// Labels share the row while the message keeps this much; past that they get a line
+// of their own under it, so every label shows at any width.
+const MIN_SUBJECT = 200
 const MAX_SUBJECT = 400
 // Pointing at a row slides a message too long for it: the app's frame cannot scroll
 // sideways (it hides overflow and removes foreignObject), but it does run CSS hover.
@@ -406,25 +425,58 @@ export const SVG_LIMIT = 131072
 export const PAGE = 100
 const DRAW_LIMIT = 88000
 
+// The colors VS Code's graph gives a ref: the current branch blue, the base branch
+// orange, a remote purple. Each softened, with dark words so a label reads at a glance.
 const STYLE = `
 .bg{fill:#fff}.t{fill:#1f2328}.d{fill:#656d76}.h{fill:transparent}
 .r:hover .h{fill:rgba(107,163,232,.14)}
-.c-head{fill:#CFE3FB;stroke:#6BA3E8}.ct-head{fill:#12345C}
-.c-local{fill:#EEF5FD;stroke:#B5D0F0}.ct-local{fill:#2A4A70}
-.c-remote{fill:#F1F3F5;stroke:#CBD2D9}.ct-remote{fill:#424a53}
-.c-tag{fill:#FDF8DC;stroke:#D9B44A}.ct-tag{fill:#6f4e00}
+.c-head{fill:#CFE3FB;stroke:#6BA3E8}.ct-head{fill:#12345C}.i-head{stroke:#12345C}
+.c-base{fill:#FCE3CC;stroke:#E5A273}.ct-base{fill:#6B3A0C}.i-base{stroke:#6B3A0C}
+.c-local{fill:#D9F2E0;stroke:#6CC287}.ct-local{fill:#14532D}.i-local{stroke:#14532D}
+.c-remote{fill:#E9DFFB;stroke:#BFA0F0}.ct-remote{fill:#3F2A73}.i-remote{stroke:#3F2A73}
+.c-tag{fill:#FDF8DC;stroke:#D9B44A}.ct-tag{fill:#6f4e00}.i-tag{stroke:#6f4e00}
 .dot{stroke:#fff}
+.ic{fill:none;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
 .s{transition:transform .25s ease-out}
 .r:hover .s{transform:translateX(var(--x,0));transition:transform var(--d,1s) linear .35s}
 text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans Thai",sans-serif;font-size:${FONT}px}
 .m{font-family:ui-monospace,Menlo,monospace;font-size:${CHIP_FONT}px}
 @media (prefers-color-scheme:dark){
-.bg{fill:#1c1c1e}.t{fill:#f2f2f2}.d{fill:#a1a1aa}.c-head{fill:#2A4A70;stroke:#6BA3E8}.ct-head{fill:#E1EEFC}.dot{stroke:#1c1c1e}
-.c-local{fill:#1E2F44;stroke:#4F7BAE}.ct-local{fill:#CFE3FB}
-.c-remote{fill:#33363b;stroke:#6e7681}.ct-remote{fill:#d6d8da}
-.c-tag{fill:#3d2f00;stroke:#D9B44A}.ct-tag{fill:#f2d35e}
+.bg{fill:#1c1c1e}.t{fill:#f2f2f2}.d{fill:#a1a1aa}.dot{stroke:#1c1c1e}
+.c-head{fill:#2A4A70;stroke:#6BA3E8}.ct-head{fill:#E1EEFC}.i-head{stroke:#E1EEFC}
+.c-base{fill:#4A2F18;stroke:#E5A273}.ct-base{fill:#FBE3CC}.i-base{stroke:#FBE3CC}
+.c-local{fill:#1C3A28;stroke:#6CC287}.ct-local{fill:#D9F2E0}.i-local{stroke:#D9F2E0}
+.c-remote{fill:#352A52;stroke:#BFA0F0}.ct-remote{fill:#E9DFFB}.i-remote{stroke:#E9DFFB}
+.c-tag{fill:#3d2f00;stroke:#D9B44A}.ct-tag{fill:#f2d35e}.i-tag{stroke:#f2d35e}
 }
 `
+
+// Drawn rather than typed: a font's cloud glyph is small and differs by machine.
+const BRANCH_ICON =
+  '<circle cx="4" cy="3" r="1.8"/><circle cx="4" cy="13" r="1.8"/><circle cx="12" cy="4" r="1.8"/><path d="M4 4.8v6.4M12 5.8c0 3-8 2.4-8 5.4"/>'
+const CLOUD_ICON = '<path d="M4.6 13a3.4 3.4 0 0 1-.4-6.8A4.4 4.4 0 0 1 12.6 7a3 3 0 0 1-.1 6z"/>'
+
+function chipWidthOf(chip: Chip, room: number): { label: string; width: number } {
+  const label = cut(chip.text, room)
+  const icons = chip.where === 'both' ? 2 : chip.where === 'none' ? 0 : 1
+
+  return { label, width: Array.from(label).length * CHIP_CHAR + CHIP_PAD * 2 + icons * ICON_ROOM }
+}
+
+function drawChip(chip: Chip, label: string, chipWidth: number, x: number, y: number): string {
+  const iconAt = (at: number, shape: string) =>
+    `<g class="ic i-${chip.kind}" transform="translate(${at} ${y - ICON / 2})">${shape}</g>`
+  const leading = chip.where === 'local' || chip.where === 'both'
+  const labelX = x + CHIP_PAD + (chip.where === 'none' ? 0 : ICON_ROOM)
+
+  return (
+    `<rect class="c-${chip.kind}" x="${x}" y="${y - CHIP_HEIGHT / 2}" width="${chipWidth}" height="${CHIP_HEIGHT}" rx="6"/>` +
+    (leading ? iconAt(x + CHIP_PAD, BRANCH_ICON) : '') +
+    (chip.where === 'remote' ? iconAt(x + CHIP_PAD, CLOUD_ICON) : '') +
+    `<text class="m ct-${chip.kind}" x="${labelX}" y="${y + 5}">${escapeXml(label)}</text>` +
+    (chip.where === 'both' ? iconAt(x + chipWidth - CHIP_PAD - ICON, CLOUD_ICON) : '')
+  )
+}
 
 function drawRows(
   rows: readonly Row[],
@@ -436,38 +488,68 @@ function drawRows(
     above: Row | undefined
   },
 ): string {
-  const isNarrow = width < NARROW_BELOW
-  const maxChips = isNarrow ? 1 : 3
-  // A very narrow pane cuts the label, so it never covers the graph's lanes.
-  const chipRoom = Math.max(4, Math.min(isNarrow ? 18 : 26, Math.floor((width - textX - 24) / CHIP_CHAR)))
+  const edgeRight = width - 6
+  const usable = Math.max(40, edgeRight - textX)
+  // A label cut only where it could not fit a line of its own, clear of the lanes.
+  const labelRoom = Math.max(4, Math.min(MAX_LABEL, Math.floor((usable - CHIP_PAD * 2 - ICON_ROOM * 2) / CHIP_CHAR)))
   const laneX = (lane: number) => LANE / 2 + 6 + lane * LANE
-  const rowY = (index: number) => ROW / 2 + index * ROW
-  const height = rows.length * ROW + ROW / 2
+  // Each row is as tall as its labels need, so each row's place adds up from the top.
+  const plans = rows.map(row => {
+    const all = chipsOf(row.commit.refs, remoteNames)
+    const chips = all.slice(0, MAX_CHIPS).map(chip => ({ chip, ...chipWidthOf(chip, labelRoom) }))
+    const inlineWidth = chips.reduce((sum, one) => sum + one.width + CHIP_GAP, 0)
+    const isInline = chips.length === 0 || inlineWidth <= usable - MIN_SUBJECT
+    const placed: { index: number; x: number; line: number }[] = []
+    let x = textX
+    let line = 0
+
+    if (!isInline) {
+      chips.forEach((one, index) => {
+        if (x > textX && x + one.width > edgeRight) {
+          x = textX
+          line += 1
+        }
+        placed.push({ index, x, line })
+        x += one.width + CHIP_GAP
+      })
+    }
+
+    return { all, chips, isInline, placed, height: ROW + (isInline ? 0 : (line + 1) * CHIP_LINE) }
+  })
+  const ys: number[] = []
+
+  plans.reduce((top, plan, index) => {
+    ys[index] = top + ROW / 2
+
+    return top + plan.height
+  }, 0)
+  const height = plans.reduce((sum, plan) => sum + plan.height, 0) + ROW / 2
   const lines: string[] = []
   const dots: string[] = []
   const texts: string[] = []
-  // Edges run a full row down; the drawing's own edges cut what leaves the page.
-  const drawEdges = (row: Row, y: number) => {
+  // Edges run down to the next row; the drawing's own edges cut what leaves the page.
+  const drawEdges = (row: Row, y: number, y2: number) => {
     for (const edge of row.edges) {
       const x1 = laneX(edge.from)
       const x2 = laneX(edge.to)
-      const y2 = y + ROW
       const d =
         x1 === x2
           ? `M${x1} ${y}V${y2}`
-          : `M${x1} ${y}C${x1} ${y + ROW * 0.55} ${x2} ${y2 - ROW * 0.55} ${x2} ${y2}`
+          : `M${x1} ${y}C${x1} ${y + (y2 - y) * 0.55} ${x2} ${y2 - (y2 - y) * 0.55} ${x2} ${y2}`
 
       lines.push(`<path d="${d}" stroke="${paint(edge.color)}"/>`)
     }
   }
 
   // What comes down from the page above.
-  if (above !== undefined) drawEdges(above, rowY(-1))
+  if (above !== undefined) drawEdges(above, -ROW / 2, ROW / 2)
 
   rows.forEach((row, index) => {
-    const y = rowY(index)
+    const y = ys[index] ?? 0
+    const plan = plans[index]
 
-    drawEdges(row, y)
+    if (plan === undefined) return
+    drawEdges(row, y, ys[index + 1] ?? y + ROW)
 
     const isHead = row.commit.refs.some(ref => ref === 'HEAD' || ref.startsWith('HEAD -> '))
     const isMerge = row.commit.parents.length > 1
@@ -476,32 +558,35 @@ function drawRows(
       `<circle class="dot" cx="${laneX(row.lane)}" cy="${y}" r="${isHead ? 7.5 : isMerge ? 4.5 : 6}" fill="${paint(row.color)}" stroke-width="2"/>`,
     )
 
-    const chips = chipsOf(row.commit.refs, remoteNames)
-    const shown = chips.slice(0, maxChips)
-    const extra = chips.length - shown.length
-    let right = width - 6
+    const extra = plan.all.length - plan.chips.length
+    let right = edgeRight
     let chipMarks = ''
 
-    if (extra > 0) {
-      right -= 28
-      chipMarks += `<text class="m d" x="${right + 3}" y="${y + 5}">+${extra}</text>`
-    }
-    for (const chip of [...shown].reverse()) {
-      const label = cut(chip.text, chipRoom)
-      const chipWidth = Array.from(label).length * CHIP_CHAR + 12
+    if (plan.isInline) {
+      for (const one of [...plan.chips].reverse()) {
+        right -= one.width
+        chipMarks += drawChip(one.chip, one.label, one.width, right, y)
+        right -= CHIP_GAP
+      }
+    } else {
+      for (const spot of plan.placed) {
+        const one = plan.chips[spot.index]
 
-      right -= chipWidth
-      chipMarks +=
-        `<rect class="c-${chip.kind}" x="${right}" y="${y - 13}" width="${chipWidth}" height="26" rx="6"/>` +
-        `<text class="m ct-${chip.kind}" x="${right + 6}" y="${y + 5}">${escapeXml(label)}</text>`
-      right -= 5
+        if (one !== undefined) {
+          chipMarks += drawChip(one.chip, one.label, one.width, spot.x, y + ROW / 2 + CHIP_LINE / 2 + spot.line * CHIP_LINE - 3)
+        }
+      }
+      if (extra > 0) {
+        chipMarks += `<text class="m d" x="${textX}" y="${y + plan.height - ROW / 2 - 4}">+${extra}</text>`
+      }
     }
 
     const subject = cut(row.commit.subject, MAX_SUBJECT)
     const age = ageOf(row.commit.time, now)
     const after = `  ${age} · ${cut(row.commit.author, 30)}`
+    const hasInlineChips = plan.isInline && plan.chips.length > 0
     // Measured by estimate, so a slide goes a little past the end rather than short.
-    const room = (chips.length > 0 ? right - 8 : width - 6) - textX
+    const room = (hasInlineChips ? right - 8 : edgeRight) - textX
     const textWidth = (Array.from(subject).length + Array.from(after).length) * FONT * SLIDE_CHAR
     const slide = Math.ceil(textWidth - room + 16)
     const motion =
@@ -509,17 +594,16 @@ function drawRows(
         ? ` style="--x:-${slide}px;--d:${Math.min(20, Math.max(1, slide / SLIDE_SPEED)).toFixed(1)}s"`
         : ''
     const tooltip = escapeXml(
-      `${row.commit.hash.slice(0, 8)} · ${row.commit.author} · ${age}\n${subject}${chips.length > 0 ? `\n${chips.map(chip => chip.text).join(', ')}` : ''}`,
+      `${row.commit.hash.slice(0, 8)} · ${row.commit.author} · ${age}\n${subject}${plan.all.length > 0 ? `\n${plan.all.map(chip => chip.text).join(', ')}` : ''}`,
     )
     // The label's backing hides the message as it passes beneath.
-    const backing =
-      chips.length > 0
-        ? `<rect class="bg" x="${right}" y="${y - ROW / 2}" width="${width - right}" height="${ROW}"/>`
-        : ''
+    const backing = hasInlineChips
+      ? `<rect class="bg" x="${right}" y="${y - ROW / 2}" width="${width - right}" height="${ROW}"/>`
+      : ''
 
     texts.push(
       `<g class="r"><title>${tooltip}</title>` +
-        `<rect class="h" x="${textX - 4}" y="${y - ROW / 2}" width="${width - textX + 4}" height="${ROW}"/>` +
+        `<rect class="h" x="${textX - 4}" y="${y - ROW / 2}" width="${width - textX + 4}" height="${plan.height}"/>` +
         `<g clip-path="url(#k)"><text class="t s" x="${textX}" y="${y + 6}"${motion}>${escapeXml(subject)}<tspan class="d">${escapeXml(after)}</tspan></text></g>` +
         backing +
         chipMarks +
