@@ -115,7 +115,7 @@ test('a local branch and its remote copy read as one chip, head first', () => {
   const chips = chipsOf(['origin/x', 'HEAD -> dev', 'origin/dev', 'tag: v1'], new Set(['origin/dev', 'origin/x']))
 
   expect(chips).toEqual([
-    { text: 'dev', kind: 'head', where: 'both' },
+    { text: 'dev', kind: 'head', where: 'both', remote: 'origin/dev' },
     { text: 'origin/x', kind: 'remote', where: 'remote' },
     { text: 'v1', kind: 'tag', where: 'none' },
   ])
@@ -297,7 +297,7 @@ test('the current branch reads apart from main and a remote, and icons say where
   const chips = chipsOf(['HEAD -> dev', 'origin/dev', 'main', 'origin/old'], remotes)
 
   expect(chips).toEqual([
-    { text: 'dev', kind: 'head', where: 'both' },
+    { text: 'dev', kind: 'head', where: 'both', remote: 'origin/dev' },
     { text: 'main', kind: 'local', where: 'local' },
     { text: 'origin/old', kind: 'remote', where: 'remote' },
   ])
@@ -311,7 +311,6 @@ test('the current branch reads apart from main and a remote, and icons say where
   expect(source.includes('circle cx="8" cy="8" r="6.6"')).toBe(true)
   expect(source.includes('circle cx="12" cy="4"')).toBe(true)
   expect(source.includes('M4.6 13a3.4')).toBe(true)
-  expect(source.includes('class="c-cloud"')).toBe(true)
   expect(source.includes('☁')).toBe(false)
 })
 
@@ -355,8 +354,10 @@ test('a branch and its remote copy on different commits read as two chips', () =
     remoteNames: remotes,
   })
 
-  expect(source.includes('>dev<')).toBe(true)
-  expect(source.includes('>origin/dev<')).toBe(true)
+  // A cloud on a commit of its own always carries its branch's name.
+  expect(source.match(/>dev<\/text>/g)?.length).toBe(2)
+  expect(source.includes('class="c-remote"')).toBe(true)
+  expect(source.includes('class="c-cloud"')).toBe(false)
 })
 
 test('a full page of 100 long commits fits what a pane can take', () => {
@@ -796,8 +797,32 @@ test('orange is a branch on this machine, and purple is only ever the remote', (
     remoteNames: new Set(['origin/main']),
   })
 
-  expect(source.includes('.c-local{fill:#C2570C}')).toBe(true)
+  expect(source.includes('.c-local{fill:#E8914A}')).toBe(true)
   expect(source.includes('.c-remote,.c-cloud{fill:#6B3FA0}')).toBe(true)
   expect(source.includes('<rect class="c-local"')).toBe(true)
-  expect(source.includes('class="c-cloud"')).toBe(true)
+  expect(source.includes('<rect class="c-remote"')).toBe(true)
+})
+
+test('a cloud carries its branch name, and drops it only beside that branch when room runs out', () => {
+  const remotes = new Set(['origin/dev', 'origin/main'])
+  const refs = ['HEAD -> dev', 'origin/dev', 'main', 'origin/main']
+  const wide = buildSvg([commit('c', [], refs)], { width: 900, now: 2000, remoteNames: remotes })
+
+  expect(wide.source.match(/>dev<\/text>/g)?.length).toBe(2)
+  expect(wide.source.match(/>main<\/text>/g)?.length).toBe(2)
+  expect(wide.source.includes('class="c-cloud"')).toBe(false)
+
+  const tight = buildSvg([commit('c', [], refs)], { width: 280, now: 2000, remoteNames: remotes })
+
+  expect(tight.source.match(/class="c-cloud"/g)?.length).toBe(2)
+  expect(tight.source.match(/>dev<\/text>/g)?.length).toBe(1)
+  expect(tight.source.includes('origin/dev')).toBe(true)
+
+  const other = buildSvg([commit('c', ['b'], ['HEAD -> dev']), commit('b', [], ['upstream/dev'])], {
+    width: 900,
+    now: 2000,
+    remoteNames: new Set(['upstream/dev']),
+  })
+
+  expect(other.source.includes('>upstream/dev<')).toBe(true)
 })

@@ -311,6 +311,8 @@ export type Chip = {
   text: string
   kind: 'head' | 'local' | 'remote' | 'tag'
   where: 'local' | 'remote' | 'both' | 'none'
+  // The remote's copy on this same commit, where `where` is `both`.
+  remote?: string
 }
 
 // `HEAD -> dev`, `origin/dev`, `tag: v1`: a local branch and its remote copy on the
@@ -339,14 +341,14 @@ export function chipsOf(refs: readonly string[], remoteNames: ReadonlySet<string
       chips.push({ text: ref.slice('tag: '.length), kind: 'tag', where: 'none' })
     } else if (ref.startsWith('HEAD -> ') || locals.has(ref)) {
       const name = ref.startsWith('HEAD -> ') ? head : ref
-      const synced = refs.some(
+      const remote = refs.find(
         other => remoteNames.has(other) && other.endsWith(`/${name}`),
       )
 
       chips.push({
         text: name,
         kind: name === head ? 'head' : 'local',
-        where: synced ? 'both' : 'local',
+        ...(remote === undefined ? { where: 'local' as const } : { where: 'both' as const, remote }),
       })
     } else {
       const local = [...locals].some(name => ref.endsWith(`/${name}`))
@@ -427,13 +429,13 @@ export const PAGE = 100
 const DRAW_LIMIT = 88000
 
 // A label's color says where it lives: blue is the branch being worked on, orange any
-// other branch on this machine, purple only ever the remote. White words read on all.
+// other branch on this machine, purple only ever the remote. Words are white, and dark on the lighter orange.
 const STYLE = `
 .bg{fill:#fff}.t{fill:#1f2328}.d{fill:#656d76}.h{fill:transparent}
 .r:hover .h{fill:rgba(107,163,232,.14)}
 .b{font-weight:600}
 .c-head{fill:${OUTGOING}}.ct-head{fill:#fff}.i-head{stroke:#fff}
-.c-local{fill:#C2570C}.ct-local{fill:#fff}.i-local{stroke:#fff}
+.c-local{fill:#E8914A}.ct-local{fill:#2E1503}.i-local{stroke:#2E1503}
 .c-remote,.c-cloud{fill:#6B3FA0}.ct-remote{fill:#fff}.i-remote,.i-cloud{stroke:#fff}
 .c-tag{fill:#FDF8DC;stroke:#D9B44A}.ct-tag{fill:#6f4e00}
 .dot{stroke:#fff}
@@ -455,34 +457,50 @@ const BRANCH_ICON =
 const CLOUD_ICON = '<path d="M4.6 13a3.4 3.4 0 0 1-.4-6.8A4.4 4.4 0 0 1 12.6 7a3 3 0 0 1-.1 6z"/>'
 const CURRENT_ICON = '<circle cx="8" cy="8" r="6.6"/><circle cx="8" cy="8" r="3.4"/><circle cx="8" cy="8" r=".6"/>'
 
-function chipWidthOf(chip: Chip, room: number): { label: string; width: number } {
-  const label = cut(chip.text, room)
-  const pill = Array.from(label).length * CHIP_CHAR + CHIP_PAD * 2 + (chip.where === 'none' ? 0 : ICON_ROOM)
+// A cloud already says "the remote", so it needs only the branch's name; another
+// remote than origin keeps its own name, as it says something the cloud does not.
+const cloudName = (ref: string) => (ref.startsWith('origin/') ? ref.slice('origin/'.length) : ref)
 
-  return { label, width: pill + (chip.where === 'both' ? CHIP_GAP + CHIP_HEIGHT : 0) }
+function pillWidth(label: string, hasIcon: boolean): number {
+  return Array.from(label).length * CHIP_CHAR + CHIP_PAD * 2 + (hasIcon ? ICON_ROOM : 0)
 }
 
-function drawChip(chip: Chip, label: string, chipWidth: number, x: number, y: number): string {
+// `isCompact`: a cloud right beside its own branch may drop to a bare mark, since the
+// branch next to it names it. A cloud on a commit of its own is never bare.
+function chipWidthOf(chip: Chip, room: number, isCompact: boolean): { label: string; width: number } {
+  const label = cut(chip.where === 'remote' ? cloudName(chip.text) : chip.text, room)
+  const pill = pillWidth(label, chip.where !== 'none')
+
+  if (chip.where !== 'both') return { label, width: pill }
+
+  return { label, width: pill + CHIP_GAP + (isCompact ? CHIP_HEIGHT : pillWidth(label, true)) }
+}
+
+function drawChip(chip: Chip, label: string, chipWidth: number, x: number, y: number, isCompact: boolean): string {
   const iconAt = (kind: string, at: number, shape: string) =>
     `<g class="ic i-${kind}" transform="translate(${at} ${y - ICON / 2})">${shape}</g>`
-  const isBoth = chip.where === 'both'
-  const pill = isBoth ? chipWidth - CHIP_GAP - CHIP_HEIGHT : chipWidth
+  const pillAt = (kind: string, at: number, width: number) =>
+    `<rect class="c-${kind}" x="${at}" y="${y - CHIP_HEIGHT / 2}" width="${width}" height="${CHIP_HEIGHT}" rx="${CHIP_HEIGHT / 2}"/>`
+  const wordAt = (kind: string, at: number) =>
+    `<text class="m ct-${kind}" x="${at}" y="${y + 5}">${escapeXml(label)}</text>`
+  const pill = pillWidth(label, chip.where !== 'none')
   const lead =
     chip.where === 'none'
       ? ''
       : iconAt(chip.kind, x + CHIP_PAD, chip.where === 'remote' ? CLOUD_ICON : chip.kind === 'head' ? CURRENT_ICON : BRANCH_ICON)
-  const labelX = x + CHIP_PAD + (chip.where === 'none' ? 0 : ICON_ROOM)
-  // The remote's copy on this same commit: its own small purple mark, as VS Code draws it.
-  const cloud = isBoth
-    ? `<circle class="c-cloud" cx="${x + pill + CHIP_GAP + CHIP_HEIGHT / 2}" cy="${y}" r="${CHIP_HEIGHT / 2}"/>` +
-      iconAt('cloud', x + pill + CHIP_GAP + (CHIP_HEIGHT - ICON) / 2, CLOUD_ICON)
-    : ''
+  const own = pillAt(chip.kind, x, pill) + lead + wordAt(chip.kind, x + CHIP_PAD + (chip.where === 'none' ? 0 : ICON_ROOM))
+
+  if (chip.where !== 'both') return own
+  const at = x + pill + CHIP_GAP
 
   return (
-    `<rect class="c-${chip.kind}" x="${x}" y="${y - CHIP_HEIGHT / 2}" width="${pill}" height="${CHIP_HEIGHT}" rx="${CHIP_HEIGHT / 2}"/>` +
-    lead +
-    `<text class="m ct-${chip.kind}" x="${labelX}" y="${y + 5}">${escapeXml(label)}</text>` +
-    cloud
+    own +
+    (isCompact
+      ? `<circle class="c-cloud" cx="${at + CHIP_HEIGHT / 2}" cy="${y}" r="${CHIP_HEIGHT / 2}"/>` +
+        iconAt('cloud', at + (CHIP_HEIGHT - ICON) / 2, CLOUD_ICON)
+      : pillAt('remote', at, chipWidth - pill - CHIP_GAP) +
+        iconAt('remote', at + CHIP_PAD, CLOUD_ICON) +
+        wordAt('remote', at + CHIP_PAD + ICON_ROOM))
   )
 }
 
@@ -524,26 +542,29 @@ export function syncOf(branch: Branch | undefined): string {
   return `${behind}↓ ${ahead}↑`
 }
 
-// Labels come first on a row: the message gets what they leave. Names shorten until
-// the labels fit beside the lanes, and only then does the last of them become a count.
+// Labels come first on a row: the message gets what they leave. Clouds beside their
+// own branch give up their names first, then names shorten, and only then does the
+// last label become a count.
 function fitChips(all: readonly Chip[], usable: number) {
-  const measure = (chips: readonly Chip[], room: number) =>
-    chips.map(chip => ({ chip, ...chipWidthOf(chip, room) }))
+  const measure = (chips: readonly Chip[], room: number, isCompact: boolean) =>
+    chips.map(chip => ({ chip, isCompact, ...chipWidthOf(chip, room, isCompact) }))
   const total = (chips: readonly { width: number }[]) =>
     chips.reduce((sum, one) => sum + one.width + CHIP_GAP, 0)
+  const named = measure(all, MAX_LABEL, false)
 
+  if (total(named) <= usable) return named
   for (let room = MAX_LABEL; room >= MIN_LABEL; room--) {
-    const chips = measure(all, room)
+    const chips = measure(all, room, true)
 
     if (total(chips) <= usable) return chips
   }
   for (let count = all.length - 1; count > 0; count--) {
-    const chips = measure(all.slice(0, count), MIN_LABEL)
+    const chips = measure(all.slice(0, count), MIN_LABEL, true)
 
     if (total(chips) + MORE_ROOM <= usable) return chips
   }
 
-  return measure(all.slice(0, 1), MIN_LABEL)
+  return measure(all.slice(0, 1), MIN_LABEL, true)
 }
 
 function drawRows(
@@ -610,7 +631,7 @@ function drawRows(
     }
     for (const one of [...shown].reverse()) {
       right -= one.width
-      chipMarks += drawChip(one.chip, one.label, one.width, right, y)
+      chipMarks += drawChip(one.chip, one.label, one.width, right, y, one.isCompact)
       right -= CHIP_GAP
     }
 
@@ -626,7 +647,7 @@ function drawRows(
         ? ` style="--x:-${slide}px;--d:${Math.min(20, Math.max(1, slide / SLIDE_SPEED)).toFixed(1)}s"`
         : ''
     const tooltip = escapeXml(
-      `${row.commit.hash.slice(0, 8)} · ${row.commit.author} · ${age}\n${subject}${all.length > 0 ? `\n${all.map(chip => chip.text).join(', ')}` : ''}`,
+      `${row.commit.hash.slice(0, 8)} · ${row.commit.author} · ${age}\n${subject}${all.length > 0 ? `\n${all.flatMap(chip => (chip.remote === undefined ? [chip.text] : [chip.text, chip.remote])).join(', ')}` : ''}`,
     )
     // The label's backing hides the message as it passes beneath.
     const backing = all.length > 0
