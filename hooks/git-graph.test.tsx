@@ -788,3 +788,16 @@ test('the graph draws in soft colors, with neither the strong set nor the earth 
   for (const old of ['#2f81f7', '#db61a2', '#a371f7', '#6E4F3A', '#A5532A', '#EFE6D8']) expect(source.includes(old)).toBe(false)
   expect(source.includes('#6B3FA0')).toBe(true)
 })
+
+test('orange is a branch on this machine, and purple is only ever the remote', () => {
+  const { source } = buildSvg([commit('c', [], ['HEAD -> dev', 'main', 'origin/main'])], {
+    width: 800,
+    now: 2000,
+    remoteNames: new Set(['origin/main']),
+  })
+
+  expect(source.includes('.c-local{fill:#C2570C}')).toBe(true)
+  expect(source.includes('.c-remote,.c-cloud{fill:#6B3FA0}')).toBe(true)
+  expect(source.includes('<rect class="c-local"')).toBe(true)
+  expect(source.includes('class="c-cloud"')).toBe(true)
+})

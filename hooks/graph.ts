@@ -426,14 +426,15 @@ export const SVG_LIMIT = 131072
 export const PAGE = 100
 const DRAW_LIMIT = 88000
 
-// As in VS Code's graph: the current branch is a blue pill and every other ref a
-// purple one, with white words so a label reads at a glance on any theme.
+// A label's color says where it lives: blue is the branch being worked on, orange any
+// other branch on this machine, purple only ever the remote. White words read on all.
 const STYLE = `
 .bg{fill:#fff}.t{fill:#1f2328}.d{fill:#656d76}.h{fill:transparent}
 .r:hover .h{fill:rgba(107,163,232,.14)}
 .b{font-weight:600}
 .c-head{fill:${OUTGOING}}.ct-head{fill:#fff}.i-head{stroke:#fff}
-.c-local,.c-remote,.c-cloud{fill:#6B3FA0}.ct-local,.ct-remote{fill:#fff}.i-local,.i-remote,.i-cloud{stroke:#fff}
+.c-local{fill:#C2570C}.ct-local{fill:#fff}.i-local{stroke:#fff}
+.c-remote,.c-cloud{fill:#6B3FA0}.ct-remote{fill:#fff}.i-remote,.i-cloud{stroke:#fff}
 .c-tag{fill:#FDF8DC;stroke:#D9B44A}.ct-tag{fill:#6f4e00}
 .dot{stroke:#fff}
 .ring{fill:#fff;stroke:${OUTGOING};stroke-width:3}
